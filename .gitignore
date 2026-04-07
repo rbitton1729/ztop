@@ -1,0 +1,19 @@
+# Build artifacts
+/target
+
+# Cargo lock is committed for binaries, uncomment to ignore for libraries
+# Cargo.lock
+
+# Editor/IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Environment
+.env
