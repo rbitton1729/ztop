@@ -146,7 +146,7 @@ impl App {
         let m = self.meminfo.as_ref()?;
         let arc_kb = self.current.size / 1024;
         let app_used = m.app_used(self.current.size);
-        let buf_cache = m.buffers + m.cached;
+        let buf_cache = m.buf_cache();
         let free = m.free;
         Some((app_used, buf_cache, arc_kb, free))
     }

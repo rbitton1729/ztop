@@ -14,5 +14,7 @@ Unevictable:        4080 kB
 Mlocked:              80 kB
 SwapTotal:       4194300 kB
 SwapFree:        3000000 kB
+SReclaimable:    1024000 kB
+SUnreclaim:       256000 kB
 Dirty:              3036 kB
 Writeback:             0 kB

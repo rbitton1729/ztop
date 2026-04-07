@@ -12,6 +12,7 @@ pub struct MemInfo {
     pub available: u64,
     pub buffers: u64,
     pub cached: u64,
+    pub s_reclaimable: u64,
 }
 
 impl MemInfo {
@@ -29,7 +30,13 @@ impl MemInfo {
             available: get_kb(&map, "MemAvailable")?,
             buffers: get_kb(&map, "Buffers")?,
             cached: get_kb(&map, "Cached")?,
+            s_reclaimable: get_kb(&map, "SReclaimable").unwrap_or(0),
         })
+    }
+
+    /// Buffers + Cached + SReclaimable (matches `free` command's buff/cache).
+    pub fn buf_cache(&self) -> u64 {
+        self.buffers + self.cached + self.s_reclaimable
     }
 
     /// Memory used by applications (excluding buffers/cache/ARC).
@@ -37,8 +44,7 @@ impl MemInfo {
         let arc_kb = arc_bytes / 1024;
         self.total
             .saturating_sub(self.free)
-            .saturating_sub(self.buffers)
-            .saturating_sub(self.cached)
+            .saturating_sub(self.buf_cache())
             .saturating_sub(arc_kb)
     }
 }
@@ -101,13 +107,26 @@ mod tests {
     }
 
     #[test]
+    fn parse_fixture_sreclaimable() {
+        let m = fixture();
+        assert_eq!(m.s_reclaimable, 1024000);
+    }
+
+    #[test]
+    fn buf_cache_includes_sreclaimable() {
+        let m = fixture();
+        // buffers + cached + s_reclaimable
+        assert_eq!(m.buf_cache(), 512_000 + 2_048_000 + 1_024_000);
+    }
+
+    #[test]
     fn app_used_subtracts_arc() {
         let m = fixture();
-        // total - free - buffers - cached - arc_kb
-        // 32768000 - 4096000 - 512000 - 2048000 - (12345678912/1024)
+        // total - free - buf_cache - arc_kb
+        // 32768000 - 4096000 - (512000 + 2048000 + 1024000) - (12345678912/1024)
         let arc_bytes: u64 = 12_345_678_912;
         let arc_kb = arc_bytes / 1024;
-        let expected = 32_768_000 - 4_096_000 - 512_000 - 2_048_000 - arc_kb;
+        let expected = 32_768_000 - 4_096_000 - 3_584_000 - arc_kb;
         assert_eq!(m.app_used(arc_bytes), expected);
     }
 }
