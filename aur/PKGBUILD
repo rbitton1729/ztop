@@ -10,7 +10,7 @@ license=('MIT')
 depends=()
 provides=('ztop')
 keywords=('zfs' 'ztop')
-source=("ztop-linux-amd64::https://git.skylantix.com/rbitton/ztop/-/jobs/artifacts/v${pkgver}/raw/ztop-linux-amd64?job=build"
+source=("ztop-linux-amd64::https://git.skylantix.com/api/v4/projects/rbitton%2Fztop/packages/generic/ztop/${pkgver}/ztop-linux-amd64"
         "LICENCE::https://git.skylantix.com/rbitton/ztop/-/raw/v${pkgver}/LICENCE")
 sha256sums=('SKIP' 'SKIP')
 
