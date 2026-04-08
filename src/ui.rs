@@ -120,9 +120,18 @@ fn draw_ram_bar(frame: &mut Frame, area: Rect, app: &App) {
     }
     let bottom_title = Line::from(title_spans);
 
-    let zfs_available_title = Line::from(format!(
-        " ZFS available: {} ",
-        format_bytes(app.current.memory_available_bytes)
+    // Two sidecar values on the bottom-right, side by side:
+    //   - "ARC headroom": c_max - size. ARC's self-imposed cap headroom —
+    //     how much room before ARC hits its own ceiling.
+    //   - "Kernel free": memory_available_bytes. Kernel-pressure headroom —
+    //     how much room before the kernel starts squeezing ARC.
+    // Actual ARC growth stops at the min of the two, but they answer
+    // different questions (tuning vs. external pressure), so we surface both.
+    let arc_headroom_bytes = app.current.c_max.saturating_sub(app.current.size);
+    let sidecar_title = Line::from(format!(
+        " ARC headroom: {}   Kernel free: {} ",
+        format_bytes(arc_headroom_bytes),
+        format_bytes(app.current.memory_available_bytes),
     ))
     .right_aligned();
 
@@ -130,7 +139,7 @@ fn draw_ram_bar(frame: &mut Frame, area: Rect, app: &App) {
         .borders(Borders::ALL)
         .title("System RAM")
         .title_bottom(bottom_title)
-        .title_bottom(zfs_available_title);
+        .title_bottom(sidecar_title);
     let inner = block.inner(area);
     frame.render_widget(block, area);
 

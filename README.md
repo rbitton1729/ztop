@@ -35,6 +35,35 @@ FreeBSD uses `Wired` / `ARC` / `Active` / `Inactive+Laundry` instead, because it
 
 ## Install
 
+### Quick install (Linux and FreeBSD)
+
+```
+curl -fsSL https://git.skylantix.com/rbitton/zftop/-/raw/main/install.sh | sh
+```
+
+POSIX `sh` script — no bash, no `jq`, no Python. It detects your OS and
+architecture, pulls the matching binary from the latest release, verifies its
+SHA-256 against the published checksum, and drops it into `/usr/local/bin`
+(using `sudo` if that directory isn't writable). If you'd rather read the
+script before running it:
+
+```
+curl -fsSL https://git.skylantix.com/rbitton/zftop/-/raw/main/install.sh -o install.sh
+less install.sh
+sh install.sh
+```
+
+Overrides:
+
+```
+sh install.sh --version 0.1.0       # pin a specific release
+sh install.sh --dir ~/.local/bin    # install somewhere other than /usr/local/bin
+```
+
+Supported targets: `linux/amd64`, `linux/arm64`, `freebsd/amd64`. macOS and
+FreeBSD arm64 aren't published and the script will tell you so instead of
+silently installing the wrong binary.
+
 ### Arch Linux (AUR)
 
 ```
