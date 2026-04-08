@@ -144,14 +144,19 @@ impl MemSource for FreeBsdMemSource {
             color: Color::Cyan,
             bytes: wired_bytes.saturating_sub(arc_total),
         });
-        segments.extend(arc_segments.iter().cloned());
         segments.push(RamSegment {
             label: "Active",
             color: Color::Green,
             bytes: active_bytes,
         });
+        segments.extend(arc_segments.iter().cloned());
         segments.push(RamSegment {
             label: "Inactive",
+            // Matches the `Buf/Cache` colour on the Linux bar: FreeBSD 12+
+            // folded the old cache queue into inactive, so clean file-backed
+            // pagecache pages live here alongside anonymous inactive memory.
+            // Reusing the Linux cache colour keeps the two OS bars visually
+            // consistent for the "cache-ish" slice of memory.
             color: Color::Yellow,
             bytes: inactive_bytes,
         });
@@ -205,7 +210,7 @@ mod tests {
 
         let snap = src.snapshot(&arc_segs).unwrap();
         assert_eq!(snap.total_bytes, 4_250_365_952);
-        // Wired + 2 ARC segs + Active + Inactive = 5
+        // Wired + Active + 2 ARC segs + Inactive = 5
         assert_eq!(snap.segments.len(), 5);
 
         // Wired - (arc_size + arc_ovh)
@@ -213,17 +218,18 @@ mod tests {
         assert_eq!(snap.segments[0].label, "Wired");
         assert_eq!(snap.segments[0].bytes, wired_bytes - (arc_size + arc_ovh));
 
-        // ARC sub-segments preserved verbatim
-        assert_eq!(snap.segments[1].label, "ARC");
-        assert_eq!(snap.segments[1].bytes, arc_size);
-        assert_eq!(snap.segments[1].color, Color::Magenta);
-        assert_eq!(snap.segments[2].label, "ARC ovh");
-        assert_eq!(snap.segments[2].bytes, arc_ovh);
-        assert_eq!(snap.segments[2].color, Color::Indexed(53));
+        // Active sits between Wired and ARC so kernel-wired RAM stays visually
+        // grouped with userspace active pages, with ARC called out separately.
+        assert_eq!(snap.segments[1].label, "Active");
+        assert_eq!(snap.segments[1].bytes, 81 * 4096);
 
-        // Active
-        assert_eq!(snap.segments[3].label, "Active");
-        assert_eq!(snap.segments[3].bytes, 81 * 4096);
+        // ARC sub-segments preserved verbatim
+        assert_eq!(snap.segments[2].label, "ARC");
+        assert_eq!(snap.segments[2].bytes, arc_size);
+        assert_eq!(snap.segments[2].color, Color::Magenta);
+        assert_eq!(snap.segments[3].label, "ARC ovh");
+        assert_eq!(snap.segments[3].bytes, arc_ovh);
+        assert_eq!(snap.segments[3].color, Color::Indexed(53));
 
         // Inactive + Laundry
         assert_eq!(snap.segments[4].label, "Inactive");
