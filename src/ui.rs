@@ -87,7 +87,7 @@ pub fn draw(frame: &mut Frame, app: &App) {
 
 fn draw_title(frame: &mut Frame, area: Rect) {
     let title = Paragraph::new(Line::from(vec![
-        Span::styled("zfstop", Style::default().add_modifier(Modifier::BOLD)),
+        Span::styled("zftop", Style::default().add_modifier(Modifier::BOLD)),
         Span::raw(" — ARC"),
     ]));
     frame.render_widget(title, area);

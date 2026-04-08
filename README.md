@@ -1,12 +1,12 @@
-# zfstop
+# zftop
 
 A terminal-based dashboard for the Zettabyte File System, in the spirit of `htop`.
 
 ## Status
 
-**v0.1 — proof of concept.** Right now zfstop does exactly one thing: it shows you, live, how much memory your ARC is using and what's inside it. That's it. No pools view, no datasets, no snapshots, no SMART. Those are coming in later versions.
+**v0.1 — proof of concept.** Right now zftop does exactly one thing: it shows you, live, how much memory your ARC is using and what's inside it. That's it. No pools view, no datasets, no snapshots, no SMART. Those are coming in later versions.
 
-The reason zfstop exists is that the existing tools each give you one slice of the picture — `zpool status`, `arc_summary`, `zfs list`, `smartctl` — and you end up running four commands and holding the whole thing in your head. zfstop is the dashboard that fuses them. v0.1 is the first slice.
+The reason zftop exists is that the existing tools each give you one slice of the picture — `zpool status`, `arc_summary`, `zfs list`, `smartctl` — and you end up running four commands and holding the whole thing in your head. zftop is the dashboard that fuses them. v0.1 is the first slice.
 
 ## What v0.1 shows
 
@@ -24,45 +24,48 @@ All of it comes from `/proc/spl/kstat/zfs/arcstats`. No subprocesses, no parsing
 ### Arch Linux (AUR)
 
 ```
-yay -S zfstop
+yay -S zftop
 ```
 
-Or with any AUR helper. The package installs the binary as `zfstop`.
+Or with any AUR helper. The package installs the binary as `zftop`.
 
 ### From source
 
 ```
-git clone https://git.skylantix.com/rbitton/zfstop.git
-cd zfstop
+git clone https://git.skylantix.com/rbitton/zftop.git
+cd zftop
 cargo build --release
-sudo install -Dm755 target/release/zfstop /usr/bin/zfstop
+sudo install -Dm755 target/release/zftop /usr/bin/zftop
 ```
 
 ### FreeBSD
 
-Same recipe — `pkg install rust && cargo build --release && install -m 755 target/release/zfstop /usr/local/bin/zfstop`. zfstop reads ZFS state via `sysctl kstat.zfs.misc.arcstats.*` and memory via `sysctl vm.stats.vm.* hw.physmem hw.pagesize`, so it works out of the box on any FreeBSD with OpenZFS — vanilla FreeBSD, TrueNAS, pfSense, anything. The `--source` and `--meminfo` flags are Linux-only and ignored on FreeBSD.
+Same recipe — `pkg install rust && cargo build --release && install -m 755 target/release/zftop /usr/local/bin/zftop`. zftop reads ZFS state via `sysctl kstat.zfs.misc.arcstats.*` and memory via `sysctl vm.stats.vm.* hw.physmem hw.pagesize`, so it works out of the box on any FreeBSD with OpenZFS — vanilla FreeBSD, TrueNAS, pfSense, anything. The `--source` and `--meminfo` flags are Linux-only and ignored on FreeBSD.
 
 ### Prebuilt binary
 
-Static musl binaries are attached to every [release](https://git.skylantix.com/rbitton/zfstop/-/releases):
+Binaries are attached to every [release](https://git.skylantix.com/rbitton/zftop/-/releases):
 
-- `zfstop-linux-amd64` — x86_64
-- `zfstop-linux-arm64` — aarch64 (Graviton, Ampere Altra, Pi 4/5)
+- `zftop-linux-amd64` — Linux x86_64 (static musl, no runtime deps)
+- `zftop-linux-arm64` — Linux aarch64 (static musl — Graviton, Ampere Altra, Pi 4/5)
+- `zftop-freebsd-amd64` — FreeBSD amd64 (built on FreeBSD 15, dynamically links against system libc)
 
-Download the one for your arch, then:
+Download the one for your platform, then:
 
 ```
-chmod +x zfstop-linux-amd64
-sudo mv zfstop-linux-amd64 /usr/bin/zfstop
+chmod +x zftop-linux-amd64
+sudo mv zftop-linux-amd64 /usr/bin/zftop
 ```
+
+(On FreeBSD, the conventional install path is `/usr/local/bin/zftop`.)
 
 ## Usage
 
 ```
-zfstop                    # default: poll every 1s
-zfstop -n 500             # poll every 500ms
-zfstop --interval 2000    # poll every 2 seconds
-zfstop --help             # show all options
+zftop                    # default: poll every 1s
+zftop -n 500             # poll every 500ms
+zftop --interval 2000    # poll every 2 seconds
+zftop --help             # show all options
 ```
 
 ## Controls
@@ -79,11 +82,11 @@ That's the whole interface in v0.1.
 - Linux with OpenZFS installed (the `/proc/spl/kstat/zfs/arcstats` file must exist)
 - A terminal that supports ANSI colors and box-drawing characters, which is to say any terminal made in the last 30 years
 
-No runtime dependencies beyond the kernel module being loaded. zfstop is a single static binary.
+No runtime dependencies beyond the kernel module being loaded. zftop is a single static binary.
 
 ## Roadmap
 
-zfstop is a *finishable* project. ZFS is stable, the surface area we care about isn't growing, and once the dashboard shows everything worth seeing there's no v3.0 plugin system to chase. The plan is to ship a few focused versions and then stop.
+zftop is a *finishable* project. ZFS is stable, the surface area we care about isn't growing, and once the dashboard shows everything worth seeing there's no v3.0 plugin system to chase. The plan is to ship a few focused versions and then stop.
 
 - **v0.1** — ARC memory visualization (this release)
 - **v0.2** — pools view: capacity, fragmentation, health, vdev tree, scrub status

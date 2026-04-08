@@ -7,7 +7,7 @@ stages:
 
 variables:
   CARGO_HOME: ${CI_PROJECT_DIR}/.cargo
-  PACKAGE_URL: "${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/packages/generic/zfstop"
+  PACKAGE_URL: "${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/packages/generic/zftop"
 
 cache:
   key: ${CI_COMMIT_REF_SLUG}-${CI_JOB_NAME}
@@ -43,13 +43,13 @@ build:x86_64:
         sed -i "s/^version = .*/version = \"${VERSION}\"/" Cargo.toml
       fi
     - cargo build --release --target ${TARGET}
-    - x86_64-unknown-linux-musl-strip target/${TARGET}/release/zfstop
-    - cp target/${TARGET}/release/zfstop zfstop-linux-amd64
-    - sha256sum zfstop-linux-amd64 | cut -d' ' -f1 > zfstop-linux-amd64.sha256
+    - x86_64-unknown-linux-musl-strip target/${TARGET}/release/zftop
+    - cp target/${TARGET}/release/zftop zftop-linux-amd64
+    - sha256sum zftop-linux-amd64 | cut -d' ' -f1 > zftop-linux-amd64.sha256
   artifacts:
     paths:
-      - zfstop-linux-amd64
-      - zfstop-linux-amd64.sha256
+      - zftop-linux-amd64
+      - zftop-linux-amd64.sha256
 
 build:aarch64:
   stage: build
@@ -65,13 +65,13 @@ build:aarch64:
         sed -i "s/^version = .*/version = \"${VERSION}\"/" Cargo.toml
       fi
     - cargo build --release --target ${TARGET}
-    - aarch64-unknown-linux-musl-strip target/${TARGET}/release/zfstop
-    - cp target/${TARGET}/release/zfstop zfstop-linux-arm64
-    - sha256sum zfstop-linux-arm64 | cut -d' ' -f1 > zfstop-linux-arm64.sha256
+    - aarch64-unknown-linux-musl-strip target/${TARGET}/release/zftop
+    - cp target/${TARGET}/release/zftop zftop-linux-arm64
+    - sha256sum zftop-linux-arm64 | cut -d' ' -f1 > zftop-linux-arm64.sha256
   artifacts:
     paths:
-      - zfstop-linux-arm64
-      - zfstop-linux-arm64.sha256
+      - zftop-linux-arm64
+      - zftop-linux-arm64.sha256
 
 # FreeBSD build runs on a long-lived FreeBSD VM (bsd-1, 10.10.10.109) on the
 # same internal vlan as the GitLab runner. The runner SSHes in as the
@@ -100,12 +100,12 @@ build:freebsd:
     - REF="${CI_COMMIT_SHA}"
     - VERSION="${CI_COMMIT_TAG#v}"
     - ssh gitlab-ci@10.10.10.109 "REF='${REF}' VERSION='${VERSION}' sh -s" < scripts/bsd-build.sh
-    - scp gitlab-ci@10.10.10.109:zfstop/target/release/zfstop zfstop-freebsd-amd64
-    - sha256sum zfstop-freebsd-amd64 | cut -d' ' -f1 > zfstop-freebsd-amd64.sha256
+    - scp gitlab-ci@10.10.10.109:zftop/target/release/zftop zftop-freebsd-amd64
+    - sha256sum zftop-freebsd-amd64 | cut -d' ' -f1 > zftop-freebsd-amd64.sha256
   artifacts:
     paths:
-      - zfstop-freebsd-amd64
-      - zfstop-freebsd-amd64.sha256
+      - zftop-freebsd-amd64
+      - zftop-freebsd-amd64.sha256
 
 upload:
   stage: upload
@@ -123,28 +123,28 @@ upload:
     - VERSION="${CI_COMMIT_TAG#v}"
     - |
       curl --header "JOB-TOKEN: ${CI_JOB_TOKEN}" \
-           --upload-file zfstop-linux-amd64 \
-           "${PACKAGE_URL}/${VERSION}/zfstop-linux-amd64"
+           --upload-file zftop-linux-amd64 \
+           "${PACKAGE_URL}/${VERSION}/zftop-linux-amd64"
     - |
       curl --header "JOB-TOKEN: ${CI_JOB_TOKEN}" \
-           --upload-file zfstop-linux-amd64.sha256 \
-           "${PACKAGE_URL}/${VERSION}/zfstop-linux-amd64.sha256"
+           --upload-file zftop-linux-amd64.sha256 \
+           "${PACKAGE_URL}/${VERSION}/zftop-linux-amd64.sha256"
     - |
       curl --header "JOB-TOKEN: ${CI_JOB_TOKEN}" \
-           --upload-file zfstop-linux-arm64 \
-           "${PACKAGE_URL}/${VERSION}/zfstop-linux-arm64"
+           --upload-file zftop-linux-arm64 \
+           "${PACKAGE_URL}/${VERSION}/zftop-linux-arm64"
     - |
       curl --header "JOB-TOKEN: ${CI_JOB_TOKEN}" \
-           --upload-file zfstop-linux-arm64.sha256 \
-           "${PACKAGE_URL}/${VERSION}/zfstop-linux-arm64.sha256"
+           --upload-file zftop-linux-arm64.sha256 \
+           "${PACKAGE_URL}/${VERSION}/zftop-linux-arm64.sha256"
     - |
       curl --header "JOB-TOKEN: ${CI_JOB_TOKEN}" \
-           --upload-file zfstop-freebsd-amd64 \
-           "${PACKAGE_URL}/${VERSION}/zfstop-freebsd-amd64"
+           --upload-file zftop-freebsd-amd64 \
+           "${PACKAGE_URL}/${VERSION}/zftop-freebsd-amd64"
     - |
       curl --header "JOB-TOKEN: ${CI_JOB_TOKEN}" \
-           --upload-file zfstop-freebsd-amd64.sha256 \
-           "${PACKAGE_URL}/${VERSION}/zfstop-freebsd-amd64.sha256"
+           --upload-file zftop-freebsd-amd64.sha256 \
+           "${PACKAGE_URL}/${VERSION}/zftop-freebsd-amd64.sha256"
 
 release:
   stage: release
@@ -160,32 +160,32 @@ release:
   rules:
     - if: $CI_COMMIT_TAG =~ /^v/
   script:
-    - AMD64_SHA256=$(cat zfstop-linux-amd64.sha256)
-    - ARM64_SHA256=$(cat zfstop-linux-arm64.sha256)
-    - FREEBSD_SHA256=$(cat zfstop-freebsd-amd64.sha256)
+    - AMD64_SHA256=$(cat zftop-linux-amd64.sha256)
+    - ARM64_SHA256=$(cat zftop-linux-arm64.sha256)
+    - FREEBSD_SHA256=$(cat zftop-freebsd-amd64.sha256)
     - VERSION="${CI_COMMIT_TAG#v}"
     - echo "## Checksums" > description.md
     - echo "" >> description.md
     - echo "| File | SHA256 |" >> description.md
     - echo "|------|--------|" >> description.md
-    - echo "| zfstop-linux-amd64 | \`${AMD64_SHA256}\` |" >> description.md
-    - echo "| zfstop-linux-arm64 | \`${ARM64_SHA256}\` |" >> description.md
-    - echo "| zfstop-freebsd-amd64 | \`${FREEBSD_SHA256}\` |" >> description.md
+    - echo "| zftop-linux-amd64 | \`${AMD64_SHA256}\` |" >> description.md
+    - echo "| zftop-linux-arm64 | \`${ARM64_SHA256}\` |" >> description.md
+    - echo "| zftop-freebsd-amd64 | \`${FREEBSD_SHA256}\` |" >> description.md
   release:
     tag_name: ${CI_COMMIT_TAG}
-    name: "zfstop ${CI_COMMIT_TAG}"
+    name: "zftop ${CI_COMMIT_TAG}"
     description: ./description.md
     assets:
       links:
-        - name: zfstop-linux-amd64
-          url: "${PACKAGE_URL}/${CI_COMMIT_TAG#v}/zfstop-linux-amd64"
-          filepath: /zfstop-linux-amd64
-        - name: zfstop-linux-arm64
-          url: "${PACKAGE_URL}/${CI_COMMIT_TAG#v}/zfstop-linux-arm64"
-          filepath: /zfstop-linux-arm64
-        - name: zfstop-freebsd-amd64
-          url: "${PACKAGE_URL}/${CI_COMMIT_TAG#v}/zfstop-freebsd-amd64"
-          filepath: /zfstop-freebsd-amd64
+        - name: zftop-linux-amd64
+          url: "${PACKAGE_URL}/${CI_COMMIT_TAG#v}/zftop-linux-amd64"
+          filepath: /zftop-linux-amd64
+        - name: zftop-linux-arm64
+          url: "${PACKAGE_URL}/${CI_COMMIT_TAG#v}/zftop-linux-arm64"
+          filepath: /zftop-linux-arm64
+        - name: zftop-freebsd-amd64
+          url: "${PACKAGE_URL}/${CI_COMMIT_TAG#v}/zftop-freebsd-amd64"
+          filepath: /zftop-freebsd-amd64
 
 aur:
   stage: publish
@@ -209,10 +209,10 @@ aur:
     - git config --global user.email "$AUR_EMAIL"
     - VERSION="${CI_COMMIT_TAG#v}"
     # Use the same hash from the build
-    - BINARY_SHA256=$(cat "${CI_PROJECT_DIR}/zfstop-linux-amd64.sha256")
-    - LICENCE_SHA256=$(curl -sL "https://git.skylantix.com/rbitton/zfstop/-/raw/v${VERSION}/LICENCE" | sha256sum | cut -d' ' -f1)
+    - BINARY_SHA256=$(cat "${CI_PROJECT_DIR}/zftop-linux-amd64.sha256")
+    - LICENCE_SHA256=$(curl -sL "https://git.skylantix.com/rbitton/zftop/-/raw/v${VERSION}/LICENCE" | sha256sum | cut -d' ' -f1)
     # Clone AUR and update PKGBUILD
-    - git clone ssh://aur@aur.archlinux.org/zfstop.git aur-repo
+    - git clone ssh://aur@aur.archlinux.org/zftop.git aur-repo
     - cd aur-repo
     - cp "${CI_PROJECT_DIR}/aur/PKGBUILD" .
     - sed -i "s/^pkgver=.*/pkgver=${VERSION}/" PKGBUILD

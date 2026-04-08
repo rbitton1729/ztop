@@ -1,5 +1,5 @@
 [package]
-name = "zfstop"
+name = "zftop"
 version = "0.0.0-dev"
 edition = "2024"
 

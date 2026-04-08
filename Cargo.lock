@@ -672,7 +672,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "589f6da84c646204747d1270a2a5661ea66ed1cced2631d546fdfb155959f9ec"
 
 [[package]]
-name = "zfstop"
+name = "zftop"
 version = "0.0.0-dev"
 dependencies = [
  "anyhow",

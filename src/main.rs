@@ -27,7 +27,7 @@ fn main() -> Result<()> {
     let mut app = match App::new(arc_reader, mem_source) {
         Ok(app) => app,
         Err(e) if is_default_source(&source) => {
-            eprintln!("zfstop: ZFS is not found on this system");
+            eprintln!("zftop: ZFS is not found on this system");
             #[cfg(target_os = "linux")]
             eprintln!("  ({DEFAULT_SOURCE} does not exist)");
             #[cfg(target_os = "freebsd")]
@@ -78,7 +78,7 @@ fn build_sources(
     Option<Box<dyn MemSource>>,
 ) {
     if source != PathBuf::from(DEFAULT_SOURCE) || meminfo_source.is_some() {
-        eprintln!("zfstop: --source/--meminfo are Linux-only and ignored on FreeBSD");
+        eprintln!("zftop: --source/--meminfo are Linux-only and ignored on FreeBSD");
     }
     let arc_reader: Box<dyn FnMut() -> Result<ArcStats>> =
         Box::new(|| arcstats::freebsd::from_sysctl());
@@ -97,7 +97,7 @@ fn build_sources(
     Option<Box<dyn MemSource>>,
 ) {
     let arc_reader: Box<dyn FnMut() -> Result<ArcStats>> =
-        Box::new(|| Err(anyhow::anyhow!("zfstop only supports Linux and FreeBSD")));
+        Box::new(|| Err(anyhow::anyhow!("zftop only supports Linux and FreeBSD")));
     (arc_reader, None)
 }
 
@@ -134,10 +134,10 @@ fn run(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mut App, int
 
 fn print_help() {
     let version = env!("CARGO_PKG_VERSION");
-    println!("zfstop {version} — a terminal dashboard for ZFS");
+    println!("zftop {version} — a terminal dashboard for ZFS");
     println!();
     println!("USAGE:");
-    println!("    zfstop [OPTIONS]");
+    println!("    zftop [OPTIONS]");
     println!();
     println!("OPTIONS:");
     println!("    -n, --interval <ms>     Polling interval in milliseconds [default: 1000]");
@@ -168,7 +168,7 @@ fn parse_args() -> (PathBuf, Option<PathBuf>, Duration) {
                 std::process::exit(0);
             }
             "-V" | "--version" => {
-                println!("zfstop {}", env!("CARGO_PKG_VERSION"));
+                println!("zftop {}", env!("CARGO_PKG_VERSION"));
                 std::process::exit(0);
             }
             "--source" => {

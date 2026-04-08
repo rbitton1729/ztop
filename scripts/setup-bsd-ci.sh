@@ -2,7 +2,7 @@
 #
 # One-shot setup for the FreeBSD CI build host (bsd-1).
 #
-# Run as root on a fresh FreeBSD VM that should host zfstop's CI builds:
+# Run as root on a fresh FreeBSD VM that should host zftop's CI builds:
 #
 #     scp scripts/setup-bsd-ci.sh root@10.10.10.109:/tmp/
 #     ssh root@10.10.10.109 'sh /tmp/setup-bsd-ci.sh'
@@ -16,7 +16,7 @@
 #   2. Installs the CI's public SSH key into ~gitlab-ci/.ssh/authorized_keys
 #   3. Installs Rust via rustup as that user (more current than `pkg install rust`,
 #      and per-user so it can be upgraded without root)
-#   4. Clones the zfstop repo into ~gitlab-ci/zfstop so the CI build job can
+#   4. Clones the zftop repo into ~gitlab-ci/zftop so the CI build job can
 #      `git fetch && git checkout <tag>` instead of cloning each time
 #
 # Threat model: gitlab-ci has no sudo, no shell other than sh, and owns nothing
@@ -26,12 +26,12 @@ set -eu
 
 USER_NAME="gitlab-ci"
 USER_HOME="/home/${USER_NAME}"
-REPO_URL="https://git.skylantix.com/rbitton/zfstop.git"
-REPO_DIR="${USER_HOME}/zfstop"
+REPO_URL="https://git.skylantix.com/rbitton/zftop.git"
+REPO_DIR="${USER_HOME}/zftop"
 
 # Public key for the CI → bsd-1 connection. The matching private key lives in
 # GitLab as the BSD_SSH_PRIVATE_KEY file variable.
-PUBKEY='ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIN7gBuKsw9aTLXuOTwRAhEf67NmYo2dR9EVH1IP8vQ+7 gitlab-ci@bsd-1 (zfstop CI)'
+PUBKEY='ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIN7gBuKsw9aTLXuOTwRAhEf67NmYo2dR9EVH1IP8vQ+7 gitlab-ci@bsd-1 (zftop CI)'
 
 if [ "$(id -u)" -ne 0 ]; then
     echo "error: must run as root" >&2
@@ -43,7 +43,7 @@ if pw user show "$USER_NAME" >/dev/null 2>&1; then
     echo "[ok] user $USER_NAME already exists"
 else
     echo "[+] creating user $USER_NAME"
-    pw useradd "$USER_NAME" -m -s /bin/sh -c "GitLab CI build user for zfstop"
+    pw useradd "$USER_NAME" -m -s /bin/sh -c "GitLab CI build user for zftop"
 fi
 
 # 2. Install the SSH public key.
@@ -80,4 +80,4 @@ fi
 
 echo
 echo "Setup complete. The CI job can now SSH as ${USER_NAME}@10.10.10.109"
-echo "and run 'cd zfstop && git fetch && git checkout <tag> && cargo build --release'."
+echo "and run 'cd zftop && git fetch && git checkout <tag> && cargo build --release'."

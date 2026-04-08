@@ -13,9 +13,9 @@
 #              (empty on non-tag builds — in which case Cargo.toml is NOT
 #              version-stamped, and the build keeps the in-tree "0.0.0-dev")
 #
-# Builds zfstop in release mode and leaves the binary at:
+# Builds zftop in release mode and leaves the binary at:
 #
-#     ~gitlab-ci/zfstop/target/release/zfstop
+#     ~gitlab-ci/zftop/target/release/zftop
 #
 # The CI job then SCPs that file back into its workspace and continues.
 #
@@ -24,7 +24,7 @@
 set -eu
 : "${REF:?REF not set; pipe with ssh \"REF=<sha> VERSION=<ver-or-empty> sh -s\" < scripts/bsd-build.sh}"
 
-cd "$HOME/zfstop"
+cd "$HOME/zftop"
 
 # Pull anything new (branches and tags) so we can resolve REF below.
 git fetch --tags --force origin
@@ -47,7 +47,7 @@ fi
 
 # Strip is optional on FreeBSD but matches what the Linux jobs do.
 # /usr/bin/strip is in the FreeBSD base system.
-strip target/release/zfstop
+strip target/release/zftop
 
-ls -la target/release/zfstop
-file target/release/zfstop
+ls -la target/release/zftop
+file target/release/zftop
