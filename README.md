@@ -1,12 +1,12 @@
-# ztop
+# zfstop
 
 A terminal-based dashboard for the Zettabyte File System, in the spirit of `htop`.
 
 ## Status
 
-**v0.1 — proof of concept.** Right now ztop does exactly one thing: it shows you, live, how much memory your ARC is using and what's inside it. That's it. No pools view, no datasets, no snapshots, no SMART. Those are coming in later versions.
+**v0.1 — proof of concept.** Right now zfstop does exactly one thing: it shows you, live, how much memory your ARC is using and what's inside it. That's it. No pools view, no datasets, no snapshots, no SMART. Those are coming in later versions.
 
-The reason ztop exists is that the existing tools each give you one slice of the picture — `zpool status`, `arc_summary`, `zfs list`, `smartctl` — and you end up running four commands and holding the whole thing in your head. ztop is the dashboard that fuses them. v0.1 is the first slice.
+The reason zfstop exists is that the existing tools each give you one slice of the picture — `zpool status`, `arc_summary`, `zfs list`, `smartctl` — and you end up running four commands and holding the whole thing in your head. zfstop is the dashboard that fuses them. v0.1 is the first slice.
 
 ## What v0.1 shows
 
@@ -27,38 +27,38 @@ All of it comes from `/proc/spl/kstat/zfs/arcstats`. No subprocesses, no parsing
 yay -S zfstop
 ```
 
-Or with any AUR helper. The package installs the binary as `ztop` with a `zfstop` symlink.
+Or with any AUR helper. The package installs the binary as `zfstop`.
 
 ### From source
 
 ```
-git clone https://git.skylantix.com/rbitton/ztop.git
-cd ztop
+git clone https://git.skylantix.com/rbitton/zfstop.git
+cd zfstop
 cargo build --release
-sudo install -Dm755 target/release/ztop /usr/bin/ztop
+sudo install -Dm755 target/release/zfstop /usr/bin/zfstop
 ```
 
 ### Prebuilt binary
 
-Static musl binaries are attached to every [release](https://git.skylantix.com/rbitton/ztop/-/releases):
+Static musl binaries are attached to every [release](https://git.skylantix.com/rbitton/zfstop/-/releases):
 
-- `ztop-linux-amd64` — x86_64
-- `ztop-linux-arm64` — aarch64 (Graviton, Ampere Altra, Pi 4/5)
+- `zfstop-linux-amd64` — x86_64
+- `zfstop-linux-arm64` — aarch64 (Graviton, Ampere Altra, Pi 4/5)
 
 Download the one for your arch, then:
 
 ```
-chmod +x ztop-linux-amd64
-sudo mv ztop-linux-amd64 /usr/bin/ztop
+chmod +x zfstop-linux-amd64
+sudo mv zfstop-linux-amd64 /usr/bin/zfstop
 ```
 
 ## Usage
 
 ```
-ztop                    # default: poll every 1s
-ztop -n 500             # poll every 500ms
-ztop --interval 2000    # poll every 2 seconds
-ztop --help             # show all options
+zfstop                    # default: poll every 1s
+zfstop -n 500             # poll every 500ms
+zfstop --interval 2000    # poll every 2 seconds
+zfstop --help             # show all options
 ```
 
 ## Controls
@@ -75,11 +75,11 @@ That's the whole interface in v0.1.
 - Linux with OpenZFS installed (the `/proc/spl/kstat/zfs/arcstats` file must exist)
 - A terminal that supports ANSI colors and box-drawing characters, which is to say any terminal made in the last 30 years
 
-No runtime dependencies beyond the kernel module being loaded. ztop is a single static binary.
+No runtime dependencies beyond the kernel module being loaded. zfstop is a single static binary.
 
 ## Roadmap
 
-ztop is a *finishable* project. ZFS is stable, the surface area we care about isn't growing, and once the dashboard shows everything worth seeing there's no v3.0 plugin system to chase. The plan is to ship a few focused versions and then stop.
+zfstop is a *finishable* project. ZFS is stable, the surface area we care about isn't growing, and once the dashboard shows everything worth seeing there's no v3.0 plugin system to chase. The plan is to ship a few focused versions and then stop.
 
 - **v0.1** — ARC memory visualization (this release)
 - **v0.2** — pools view: capacity, fragmentation, health, vdev tree, scrub status

@@ -23,7 +23,7 @@ fn main() -> Result<()> {
     let mut app = match App::new(source.clone(), meminfo_source) {
         Ok(app) => app,
         Err(_) if source == PathBuf::from(DEFAULT_SOURCE) => {
-            eprintln!("ztop: ZFS is not found on this system ({DEFAULT_SOURCE} does not exist)");
+            eprintln!("zfstop: ZFS is not found on this system ({DEFAULT_SOURCE} does not exist)");
             std::process::exit(1);
         }
         Err(e) => return Err(e.context(format!("failed to read {}", source.display()))),
@@ -65,10 +65,10 @@ fn run(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mut App, int
 
 fn print_help() {
     let version = env!("CARGO_PKG_VERSION");
-    println!("ztop {version} — a terminal dashboard for ZFS");
+    println!("zfstop {version} — a terminal dashboard for ZFS");
     println!();
     println!("USAGE:");
-    println!("    ztop [OPTIONS]");
+    println!("    zfstop [OPTIONS]");
     println!();
     println!("OPTIONS:");
     println!("    -n, --interval <ms>     Polling interval in milliseconds [default: 1000]");
@@ -97,7 +97,7 @@ fn parse_args() -> (PathBuf, Option<PathBuf>, Duration) {
                 std::process::exit(0);
             }
             "-V" | "--version" => {
-                println!("ztop {}", env!("CARGO_PKG_VERSION"));
+                println!("zfstop {}", env!("CARGO_PKG_VERSION"));
                 std::process::exit(0);
             }
             "--source" => {
