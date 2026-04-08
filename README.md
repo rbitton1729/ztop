@@ -29,19 +29,6 @@ yay -S zftop
 
 Or with any AUR helper. The package installs the binary as `zftop`.
 
-### From source
-
-```
-git clone https://git.skylantix.com/rbitton/zftop.git
-cd zftop
-cargo build --release
-sudo install -Dm755 target/release/zftop /usr/bin/zftop
-```
-
-### FreeBSD
-
-Same recipe — `pkg install rust && cargo build --release && install -m 755 target/release/zftop /usr/local/bin/zftop`. zftop reads ZFS state via `sysctl kstat.zfs.misc.arcstats.*` and memory via `sysctl vm.stats.vm.* hw.physmem hw.pagesize`, so it works out of the box on any FreeBSD with OpenZFS — vanilla FreeBSD, TrueNAS, pfSense, anything. The `--source` and `--meminfo` flags are Linux-only and ignored on FreeBSD.
-
 ### Prebuilt binary
 
 Binaries are attached to every [release](https://git.skylantix.com/rbitton/zftop/-/releases):
@@ -58,6 +45,19 @@ sudo mv zftop-linux-amd64 /usr/bin/zftop
 ```
 
 (On FreeBSD, the conventional install path is `/usr/local/bin/zftop`.)
+
+### From source
+
+```
+git clone https://git.skylantix.com/rbitton/zftop.git
+cd zftop
+cargo build --release
+sudo install -Dm755 target/release/zftop /usr/bin/zftop
+```
+
+### FreeBSD
+
+Same recipe — `pkg install rust && cargo build --release && install -m 755 target/release/zftop /usr/local/bin/zftop`. zftop reads ZFS state via `sysctl kstat.zfs.misc.arcstats.*` and memory via `sysctl vm.stats.vm.* hw.physmem hw.pagesize`, so it works out of the box on any FreeBSD with OpenZFS — vanilla FreeBSD, TrueNAS, pfSense, anything. The `--source` and `--meminfo` flags are Linux-only and ignored on FreeBSD.
 
 ## Usage
 
