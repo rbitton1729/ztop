@@ -121,6 +121,12 @@ upload:
     - if: $CI_COMMIT_TAG =~ /^v/
   script:
     - VERSION="${CI_COMMIT_TAG#v}"
+    # Export VERSION as a dotenv artifact so the release: job sees it as a
+    # GitLab CI variable. Required because the release: block can't run bash
+    # modifiers like ${CI_COMMIT_TAG#v} — it's processed by GitLab's variable
+    # expander, which only does plain $VAR substitution. Without this, every
+    # asset link's URL ends up with an empty version segment and 404s.
+    - echo "VERSION=${VERSION}" > version.env
     - |
       curl --header "JOB-TOKEN: ${CI_JOB_TOKEN}" \
            --upload-file zftop-linux-amd64 \
@@ -145,6 +151,9 @@ upload:
       curl --header "JOB-TOKEN: ${CI_JOB_TOKEN}" \
            --upload-file zftop-freebsd-amd64.sha256 \
            "${PACKAGE_URL}/${VERSION}/zftop-freebsd-amd64.sha256"
+  artifacts:
+    reports:
+      dotenv: version.env
 
 release:
   stage: release
@@ -172,19 +181,24 @@ release:
     - echo "| zftop-linux-arm64 | \`${ARM64_SHA256}\` |" >> description.md
     - echo "| zftop-freebsd-amd64 | \`${FREEBSD_SHA256}\` |" >> description.md
   release:
+    # ${VERSION} below is the v-prefix-stripped tag, sourced from the dotenv
+    # artifact exported by the upload job. We can't use ${CI_COMMIT_TAG#v}
+    # here because GitLab's release: block processes variables with its own
+    # expander, which doesn't support bash modifiers — it'd silently expand
+    # to an empty string and produce 404 download links.
     tag_name: ${CI_COMMIT_TAG}
     name: "zftop ${CI_COMMIT_TAG}"
     description: ./description.md
     assets:
       links:
         - name: zftop-linux-amd64
-          url: "${PACKAGE_URL}/${CI_COMMIT_TAG#v}/zftop-linux-amd64"
+          url: "${PACKAGE_URL}/${VERSION}/zftop-linux-amd64"
           filepath: /zftop-linux-amd64
         - name: zftop-linux-arm64
-          url: "${PACKAGE_URL}/${CI_COMMIT_TAG#v}/zftop-linux-arm64"
+          url: "${PACKAGE_URL}/${VERSION}/zftop-linux-arm64"
           filepath: /zftop-linux-arm64
         - name: zftop-freebsd-amd64
-          url: "${PACKAGE_URL}/${CI_COMMIT_TAG#v}/zftop-freebsd-amd64"
+          url: "${PACKAGE_URL}/${VERSION}/zftop-freebsd-amd64"
           filepath: /zftop-freebsd-amd64
 
 aur:
@@ -240,8 +254,13 @@ crates_io:
     - if: $CI_COMMIT_TAG =~ /^v[0-9]+\.[0-9]+\.[0-9]+$/
   cache: []
   variables:
-    # Read from a CI variable; see GitLab project Settings → CI/CD → Variables.
-    # The variable must be set with --raw and ideally --masked.
+    # CARGO_REGISTRY_TOKEN comes from the project-level CI variable (Settings →
+    # CI/CD → Variables). The project-level variable MUST have "Expand variable
+    # reference" enabled (raw=false / EXPANDED=true) so the $CARGO_REGISTRY_TOKEN
+    # below actually expands to the real value. With raw=true the expansion is
+    # skipped and the literal string "$CARGO_REGISTRY_TOKEN" leaks through to
+    # cargo, which then sends it as the token and crates.io rejects it as
+    # "The given API token does not match the format used by crates.io".
     CARGO_REGISTRY_TOKEN: $CARGO_REGISTRY_TOKEN
   script:
     - VERSION="${CI_COMMIT_TAG#v}"
