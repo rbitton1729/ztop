@@ -2,19 +2,23 @@
 //! `PoolsSource`. Wraps a `*mut libzfs_handle_t` and walks zpool handles +
 //! config nvlists into the plain-Rust domain types from `super::types`.
 //!
+//! libzfs itself is loaded at runtime via `dlopen` (see `ffi::Libzfs`)
+//! so the binary has no `DT_NEEDED = libzfs.so.N` entry and works across
+//! every soname bump OpenZFS has shipped since 0.7.
+//!
 //! # Walkthrough of a refresh tick
 //!
 //! 1. `zpool_iter` is called with a thunk that collects a `Vec<*mut
 //!    zpool_handle_t>` into a caller-owned buffer. libzfs hands us a borrow
-//!    to each zpool_handle_t; ownership transfers to us if we return 0 from
-//!    the callback (which we always do).
+//!    to each zpool_handle_t; ownership transfers to us when we return 0
+//!    from the callback.
 //! 2. For each collected handle:
 //!    a. Read name via `zpool_get_name`.
 //!    b. Read size / free / allocated / fragmentation via `zpool_get_prop_int`.
 //!    c. Read the pool config nvlist via `zpool_get_config`.
 //!    d. Look up `vdev_tree` nvlist inside the config and recursively walk
-//!       it into a `VdevNode`, also filling in vdev_stats for each level.
-//!    e. Read `scan_stats` off the *root* vdev nvlist for `ScrubState`.
+//!       it into a `VdevNode`, filling in vdev_stats for each level.
+//!    e. Read `scan_stats` off the root vdev nvlist for `ScrubState`.
 //!    f. Close the handle with `zpool_close`.
 //! 3. Replace `self.snapshot` with the freshly built `Vec<PoolInfo>`.
 //!
@@ -29,15 +33,18 @@ use std::ffi::{c_int, c_uint, c_void, CStr};
 use std::ptr;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use super::ffi;
+use super::ffi::{self, Libzfs};
 use super::types::{
     ErrorCounts, PoolHealth, PoolInfo, ScrubState, VdevKind, VdevNode, VdevState,
 };
 use super::PoolsSource;
 
-/// Owns a `*mut libzfs_handle_t`. Dropping this value calls `libzfs_fini`
-/// on the handle.
+/// Owns a runtime-loaded `Libzfs` (dlopen handles + function pointers) and
+/// a `*mut libzfs_handle_t` from `libzfs_init`. Dropping this value calls
+/// `libzfs_fini` on the handle, then drops `Libzfs` which dlcloses the
+/// shared libraries.
 pub struct LibzfsPoolsSource {
+    lz: Libzfs,
     handle: *mut ffi::libzfs_handle_t,
     snapshot: Vec<PoolInfo>,
 }
@@ -50,19 +57,23 @@ pub struct LibzfsPoolsSource {
 unsafe impl Send for LibzfsPoolsSource {}
 
 impl LibzfsPoolsSource {
-    /// Attempt to initialize libzfs. Returns an error describing why
-    /// `libzfs_init` returned null — typically `/dev/zfs not accessible`
-    /// (kernel module not loaded), or a permission failure.
+    /// dlopen libzfs+libnvpair, then call `libzfs_init()` to get a usable
+    /// handle. Returns an error if either the dlopen/dlsym or the init
+    /// step fails — the latter is common when `/dev/zfs` isn't accessible
+    /// (kernel module not loaded, permission denied).
     pub fn new() -> Result<Self> {
-        // SAFETY: libzfs_init takes no arguments and returns either a valid
-        // handle or null. We check for null before treating it as valid.
-        let handle = unsafe { ffi::libzfs_init() };
+        let lz = Libzfs::load()?;
+        // SAFETY: dlopen+dlsym succeeded, so libzfs_init is a valid
+        // function pointer. libzfs_init takes no arguments and returns
+        // either a valid handle or null — we null-check before using.
+        let handle = unsafe { (lz.libzfs_init)() };
         if handle.is_null() {
             return Err(anyhow!(
                 "libzfs_init returned null — is the ZFS kernel module loaded and /dev/zfs accessible?"
             ));
         }
         Ok(Self {
+            lz,
             handle,
             snapshot: Vec::new(),
         })
@@ -77,7 +88,7 @@ impl LibzfsPoolsSource {
         // SAFETY: handle is non-null and was returned by a successful
         // libzfs_init. libzfs_error_description returns a pointer into
         // libzfs-internal storage; we copy it out immediately.
-        let ptr = unsafe { ffi::libzfs_error_description(self.handle) };
+        let ptr = unsafe { (self.lz.libzfs_error_description)(self.handle) };
         if ptr.is_null() {
             "(no error)".into()
         } else {
@@ -95,9 +106,11 @@ impl Drop for LibzfsPoolsSource {
             // SAFETY: we hold the only reference to the handle, it was
             // returned from a successful libzfs_init, and we haven't yet
             // called libzfs_fini on it.
-            unsafe { ffi::libzfs_fini(self.handle) };
+            unsafe { (self.lz.libzfs_fini)(self.handle) };
             self.handle = ptr::null_mut();
         }
+        // `self.lz` drops after this method returns — its Drop impl
+        // dlcloses both libzfs.so and libnvpair.so in that order.
     }
 }
 
@@ -114,7 +127,7 @@ impl PoolsSource for LibzfsPoolsSource {
         //   duration of the `zpool_iter` call (the Vec lives on our stack
         //   and isn't moved).
         let rc = unsafe {
-            ffi::zpool_iter(
+            (self.lz.zpool_iter)(
                 self.handle,
                 collect_handle,
                 &mut handles as *mut Vec<*mut ffi::zpool_handle_t> as *mut c_void,
@@ -133,17 +146,16 @@ impl PoolsSource for LibzfsPoolsSource {
         // For each handle, build a PoolInfo and close.
         let mut pools: Vec<PoolInfo> = Vec::with_capacity(handles.len());
         for zhp in handles {
-            let info = build_pool_info(zhp);
+            let info = build_pool_info(&self.lz, zhp);
             // SAFETY: zhp was returned by zpool_iter and transferred to us
             // (we returned 0 from the callback, taking ownership). Close it
             // now that we've finished extracting data.
-            unsafe { ffi::zpool_close(zhp) };
+            unsafe { (self.lz.zpool_close)(zhp) };
             match info {
                 Ok(p) => pools.push(p),
                 Err(e) => {
                     // Swallow a single bad pool — don't let it poison the
-                    // whole refresh. Surface via error_description later if
-                    // needed.
+                    // whole refresh.
                     eprintln!("zftop: skipping pool during refresh: {e}");
                 }
             }
@@ -160,7 +172,8 @@ impl PoolsSource for LibzfsPoolsSource {
 
 // ---------------------------------------------------------------------------
 // zpool_iter callback: append each handle to a Vec and return 0 so libzfs
-// transfers ownership to the caller.
+// transfers ownership to the caller. This is a plain Rust function with
+// no libzfs refs — it doesn't need access to `Libzfs`.
 // ---------------------------------------------------------------------------
 
 unsafe extern "C" fn collect_handle(
@@ -182,11 +195,11 @@ unsafe extern "C" fn collect_handle(
 // zpool handle, every `*const c_char` libzfs gave us becomes dangling.
 // ---------------------------------------------------------------------------
 
-fn build_pool_info(zhp: *mut ffi::zpool_handle_t) -> Result<PoolInfo> {
+fn build_pool_info(lz: &Libzfs, zhp: *mut ffi::zpool_handle_t) -> Result<PoolInfo> {
     // Name. SAFETY: zpool_get_name returns a pointer into handle-internal
     // storage; it's valid until zpool_close. We copy it immediately.
     let name = unsafe {
-        let ptr = ffi::zpool_get_name(zhp);
+        let ptr = (lz.zpool_get_name)(zhp);
         if ptr.is_null() {
             return Err(anyhow!("zpool_get_name returned null"));
         }
@@ -196,14 +209,17 @@ fn build_pool_info(zhp: *mut ffi::zpool_handle_t) -> Result<PoolInfo> {
     // Properties via zpool_get_prop_int.
     // SAFETY: zhp is non-null, valid for the duration of this function,
     // and the prop enum values are hand-copied from sys/fs/zfs.h.
-    let size_bytes = unsafe { ffi::zpool_get_prop_int(zhp, ffi::ZPOOL_PROP_SIZE, ptr::null_mut()) };
+    let size_bytes =
+        unsafe { (lz.zpool_get_prop_int)(zhp, ffi::ZPOOL_PROP_SIZE, ptr::null_mut()) };
     let allocated_bytes =
-        unsafe { ffi::zpool_get_prop_int(zhp, ffi::ZPOOL_PROP_ALLOCATED, ptr::null_mut()) };
-    let free_bytes = unsafe { ffi::zpool_get_prop_int(zhp, ffi::ZPOOL_PROP_FREE, ptr::null_mut()) };
+        unsafe { (lz.zpool_get_prop_int)(zhp, ffi::ZPOOL_PROP_ALLOCATED, ptr::null_mut()) };
+    let free_bytes =
+        unsafe { (lz.zpool_get_prop_int)(zhp, ffi::ZPOOL_PROP_FREE, ptr::null_mut()) };
     // Fragmentation is a percentage 0..=100, or a sentinel (u64::MAX) when
     // unavailable. Store as `Option<u8>`.
-    let frag_raw =
-        unsafe { ffi::zpool_get_prop_int(zhp, ffi::ZPOOL_PROP_FRAGMENTATION, ptr::null_mut()) };
+    let frag_raw = unsafe {
+        (lz.zpool_get_prop_int)(zhp, ffi::ZPOOL_PROP_FRAGMENTATION, ptr::null_mut())
+    };
     let fragmentation_pct = if frag_raw <= 100 {
         Some(frag_raw as u8)
     } else {
@@ -213,36 +229,27 @@ fn build_pool_info(zhp: *mut ffi::zpool_handle_t) -> Result<PoolInfo> {
     // Config nvlist (borrowed from the handle — don't free).
     // SAFETY: zpool_get_config returns an nvlist owned by the handle. The
     // second arg is for the caller-out "old config"; we don't need it.
-    let config =
-        unsafe { ffi::zpool_get_config(zhp, ptr::null_mut()) };
+    let config = unsafe { (lz.zpool_get_config)(zhp, ptr::null_mut()) };
     if config.is_null() {
         return Err(anyhow!("zpool_get_config returned null for '{name}'"));
     }
 
     // Look up vdev_tree child of the config.
-    let vdev_tree =
-        nvlist_get_nvlist(config, ffi::ZPOOL_CONFIG_VDEV_TREE)?;
+    let vdev_tree = nvlist_get_nvlist(lz, config, ffi::ZPOOL_CONFIG_VDEV_TREE)?;
 
     // Walk the root vdev. We use the pool name as the root node's display
     // name (matches `zpool status` layout).
-    let root_vdev = walk_root_vdev(vdev_tree, &name)?;
+    let root_vdev = walk_root_vdev(lz, vdev_tree, &name)?;
 
     // Scan state lives on the root vdev nvlist.
-    let scrub = read_scan_state(vdev_tree);
+    let scrub = read_scan_state(lz, vdev_tree);
 
     // Sum errors across the whole tree.
     let errors_sum = root_vdev.total_errors();
     let errors = ErrorCounts {
         // We don't track per-type totals at the pool level — store the
         // summed total in `read` and leave write/checksum at 0. The UI
-        // surfaces either `errors.sum()` or the individual vdev counts,
-        // never the pool-level ErrorCounts decomposed.
-        //
-        // NOTE: this is a minor simplification — the plan's
-        // `PoolInfo::errors` field is documented as the sum across all
-        // vdevs, and callers that care about per-type breakdown walk
-        // VdevNode::errors directly. Keeping it as a plain `u64` sum in
-        // `errors.read` avoids an API split.
+        // surfaces either `errors.sum()` or the individual vdev counts.
         read: errors_sum,
         write: 0,
         checksum: 0,
@@ -262,8 +269,7 @@ fn build_pool_info(zhp: *mut ffi::zpool_handle_t) -> Result<PoolInfo> {
 }
 
 /// Pool-level health is the root vdev's state, mapped from `vdev_state_t`
-/// into our `PoolHealth` enum. The root vdev is "HEALTHY" when every child
-/// is HEALTHY, DEGRADED when one or more children are DEGRADED/OFFLINE/etc.
+/// into our `PoolHealth` enum.
 fn derive_pool_health(root: &VdevNode) -> PoolHealth {
     match root.state {
         VdevState::Online => PoolHealth::Online,
@@ -282,17 +288,19 @@ fn derive_pool_health(root: &VdevNode) -> PoolHealth {
 /// Top-level walker. The vdev_tree nvlist IS the pool's root vdev; its
 /// children are the top-level vdevs (raidz groups, mirrors, single disks,
 /// log/cache/spare groups). Each child is walked via `walk_child_vdev`.
-///
-/// The root VdevNode takes the pool's name as its display label and its
-/// state/errors from the vdev_tree's own vdev_stats. size_bytes is the
-/// deflated allocatable size (same as `zpool list`'s SIZE column).
-fn walk_root_vdev(nvl: *mut ffi::nvlist_t, pool_name: &str) -> Result<VdevNode> {
-    let (state, errors) = read_vdev_stats(nvl);
+fn walk_root_vdev(
+    lz: &Libzfs,
+    nvl: *mut ffi::nvlist_t,
+    pool_name: &str,
+) -> Result<VdevNode> {
+    let (state, errors) = read_vdev_stats(lz, nvl);
     let size_bytes =
-        read_vdev_stats_raw(nvl).and_then(|stats| stats.get(ffi::VS_IDX_SPACE).copied());
+        read_vdev_stats_raw(lz, nvl).and_then(|stats| stats.get(ffi::VS_IDX_SPACE).copied());
 
     let mut children = Vec::new();
-    if let Ok((child_nvls, count)) = nvlist_get_nvlist_array(nvl, ffi::ZPOOL_CONFIG_CHILDREN) {
+    if let Ok((child_nvls, count)) =
+        nvlist_get_nvlist_array(lz, nvl, ffi::ZPOOL_CONFIG_CHILDREN)
+    {
         for i in 0..count {
             // SAFETY: libzfs returned an nvlist_t** + element count. Indices
             // 0..count are valid nvlist pointers for the lifetime of the
@@ -301,7 +309,7 @@ fn walk_root_vdev(nvl: *mut ffi::nvlist_t, pool_name: &str) -> Result<VdevNode> 
             if child_nvl.is_null() {
                 continue;
             }
-            match walk_child_vdev(child_nvl, None) {
+            match walk_child_vdev(lz, child_nvl, None) {
                 Ok(child) => children.push(child),
                 Err(e) => eprintln!("zftop: skipping top-level vdev during walk: {e}"),
             }
@@ -322,19 +330,20 @@ fn walk_root_vdev(nvl: *mut ffi::nvlist_t, pool_name: &str) -> Result<VdevNode> 
 /// Spare group context down to leaves so they can be tagged as
 /// LogVdev/CacheVdev/SpareVdev for render purposes.
 fn walk_child_vdev(
+    lz: &Libzfs,
     nvl: *mut ffi::nvlist_t,
     parent_group: Option<VdevKind>,
 ) -> Result<VdevNode> {
-    let type_str = nvlist_get_string(nvl, ffi::ZPOOL_CONFIG_TYPE).unwrap_or_default();
+    let type_str = nvlist_get_string(lz, nvl, ffi::ZPOOL_CONFIG_TYPE).unwrap_or_default();
 
-    // Classify by type_str. Group-context only affects leaf disk/file
-    // tagging (LogVdev vs plain Disk).
     let kind = match (parent_group, type_str.as_str()) {
         (_, ffi::VDEV_TYPE_MIRROR) => VdevKind::Mirror,
         (_, ffi::VDEV_TYPE_RAIDZ) => VdevKind::Raidz,
         (_, ffi::VDEV_TYPE_DRAID) => VdevKind::Raidz,
         (_, ffi::VDEV_TYPE_REPLACING) => VdevKind::Mirror,
-        (Some(VdevKind::LogGroup), ffi::VDEV_TYPE_DISK | ffi::VDEV_TYPE_FILE) => VdevKind::LogVdev,
+        (Some(VdevKind::LogGroup), ffi::VDEV_TYPE_DISK | ffi::VDEV_TYPE_FILE) => {
+            VdevKind::LogVdev
+        }
         (Some(VdevKind::CacheGroup), ffi::VDEV_TYPE_DISK | ffi::VDEV_TYPE_FILE) => {
             VdevKind::CacheVdev
         }
@@ -348,43 +357,43 @@ fn walk_child_vdev(
 
     // Display name. Leaf disks/files get their `path` (stripped of "/dev/"
     // prefix for readability). Groups/RAIDZ/Mirror inherit the type_str
-    // as their label; libzfs's config nvlist doesn't expose an index like
-    // "raidz1-0" on the nvlist directly — that label comes from
-    // `zpool_vdev_name` which we don't call. Using the raw type_str is
-    // fine for v0.2.
+    // as their label.
     let name = match kind {
         VdevKind::Disk
         | VdevKind::File
         | VdevKind::LogVdev
         | VdevKind::CacheVdev
-        | VdevKind::SpareVdev => nvlist_get_string(nvl, ffi::ZPOOL_CONFIG_PATH)
+        | VdevKind::SpareVdev => nvlist_get_string(lz, nvl, ffi::ZPOOL_CONFIG_PATH)
             .map(|p| p.strip_prefix("/dev/").unwrap_or(&p).to_string())
             .unwrap_or_else(|_| type_str.clone()),
         _ => type_str.clone(),
     };
 
-    let (state, errors) = read_vdev_stats(nvl);
+    let (state, errors) = read_vdev_stats(lz, nvl);
 
     let size_bytes = match kind {
         VdevKind::LogGroup | VdevKind::CacheGroup | VdevKind::SpareGroup => None,
-        _ => read_vdev_stats_raw(nvl).and_then(|stats| stats.get(ffi::VS_IDX_SPACE).copied()),
+        _ => read_vdev_stats_raw(lz, nvl)
+            .and_then(|stats| stats.get(ffi::VS_IDX_SPACE).copied()),
     };
 
     // Recurse on children. Group-context for leaves propagates down.
     let child_group = match kind {
         VdevKind::LogGroup | VdevKind::CacheGroup | VdevKind::SpareGroup => Some(kind),
-        _ => parent_group, // inherit — raidz/mirror inside a log group still ultimately contain log leaves
+        _ => parent_group,
     };
 
     let mut children = Vec::new();
-    if let Ok((child_nvls, count)) = nvlist_get_nvlist_array(nvl, ffi::ZPOOL_CONFIG_CHILDREN) {
+    if let Ok((child_nvls, count)) =
+        nvlist_get_nvlist_array(lz, nvl, ffi::ZPOOL_CONFIG_CHILDREN)
+    {
         for i in 0..count {
             // SAFETY: same as walk_root_vdev's recursion.
             let child_nvl = unsafe { *child_nvls.add(i) };
             if child_nvl.is_null() {
                 continue;
             }
-            match walk_child_vdev(child_nvl, child_group) {
+            match walk_child_vdev(lz, child_nvl, child_group) {
                 Ok(child) => children.push(child),
                 Err(e) => eprintln!("zftop: skipping child vdev during walk: {e}"),
             }
@@ -402,11 +411,9 @@ fn walk_child_vdev(
 }
 
 /// Read `vdev_stats` uint64 array and extract (state, errors). Returns
-/// `(Online, zeros)` when the array is missing or shorter than we expect —
-/// an older libzfs with a different VS_ZIO_TYPES layout, or a top-level
-/// group node (logs/cache/spares wrapper) that doesn't carry stats.
-fn read_vdev_stats(nvl: *mut ffi::nvlist_t) -> (VdevState, ErrorCounts) {
-    let Some(stats) = read_vdev_stats_raw(nvl) else {
+/// `(Online, zeros)` when the array is missing or shorter than we expect.
+fn read_vdev_stats(lz: &Libzfs, nvl: *mut ffi::nvlist_t) -> (VdevState, ErrorCounts) {
+    let Some(stats) = read_vdev_stats_raw(lz, nvl) else {
         return (VdevState::Online, ErrorCounts::default());
     };
     let state_u64 = stats.get(ffi::VS_IDX_STATE).copied().unwrap_or(0);
@@ -424,14 +431,14 @@ fn read_vdev_stats(nvl: *mut ffi::nvlist_t) -> (VdevState, ErrorCounts) {
 }
 
 /// Return the raw vdev_stats uint64 slice, or None if the key is missing.
-fn read_vdev_stats_raw(nvl: *mut ffi::nvlist_t) -> Option<Vec<u64>> {
+fn read_vdev_stats_raw(lz: &Libzfs, nvl: *mut ffi::nvlist_t) -> Option<Vec<u64>> {
     let mut out_ptr: *mut u64 = ptr::null_mut();
     let mut nelem: c_uint = 0;
     // SAFETY: nvl is a valid nvlist_t from libzfs. The key C-string is
     // nul-terminated (static const). The out-pointers are writable and
     // only read on rc==0.
     let rc = unsafe {
-        ffi::nvlist_lookup_uint64_array(
+        (lz.nvlist_lookup_uint64_array)(
             nvl,
             ffi::ZPOOL_CONFIG_VDEV_STATS.as_ptr(),
             &mut out_ptr,
@@ -448,15 +455,15 @@ fn read_vdev_stats_raw(nvl: *mut ffi::nvlist_t) -> Option<Vec<u64>> {
     Some(slice.to_vec())
 }
 
-/// Read `scan_stats` uint64 array from a vdev nvlist (typically the root
-/// vdev). Decode into a `ScrubState`. Returns `ScrubState::Never` when the
-/// key is missing or the array is shorter than we expect.
-fn read_scan_state(nvl: *mut ffi::nvlist_t) -> ScrubState {
+/// Read `scan_stats` uint64 array from a vdev nvlist. Decodes into a
+/// `ScrubState`. Returns `ScrubState::Never` when the key is missing or
+/// the array is shorter than we expect.
+fn read_scan_state(lz: &Libzfs, nvl: *mut ffi::nvlist_t) -> ScrubState {
     let mut out_ptr: *mut u64 = ptr::null_mut();
     let mut nelem: c_uint = 0;
     // SAFETY: same as read_vdev_stats_raw.
     let rc = unsafe {
-        ffi::nvlist_lookup_uint64_array(
+        (lz.nvlist_lookup_uint64_array)(
             nvl,
             ffi::ZPOOL_CONFIG_SCAN_STATS.as_ptr(),
             &mut out_ptr,
@@ -543,17 +550,21 @@ fn map_vdev_state(v: u64) -> VdevState {
 // ---------------------------------------------------------------------------
 // Safe nvlist lookup helpers
 //
-// These wrap the raw FFI lookup functions in something callable from safe
+// These wrap the raw function-pointer calls in something callable from safe
 // code, copying strings out into owned `String`s where appropriate and
 // returning `anyhow::Error` on libzfs-reported failures.
 // ---------------------------------------------------------------------------
 
-fn nvlist_get_string(nvl: *const ffi::nvlist_t, key: &CStr) -> Result<String> {
+fn nvlist_get_string(
+    lz: &Libzfs,
+    nvl: *const ffi::nvlist_t,
+    key: &CStr,
+) -> Result<String> {
     let mut out: *const std::ffi::c_char = ptr::null();
     // SAFETY: nvl is a valid nvlist_t borrowed from libzfs; the key is
     // nul-terminated (CStr contract); out is a writable slot only read
     // on rc == 0.
-    let rc = unsafe { ffi::nvlist_lookup_string(nvl, key.as_ptr(), &mut out) };
+    let rc = unsafe { (lz.nvlist_lookup_string)(nvl, key.as_ptr(), &mut out) };
     if rc != 0 || out.is_null() {
         return Err(anyhow!(
             "nvlist_lookup_string({}) failed: rc={rc}",
@@ -567,10 +578,10 @@ fn nvlist_get_string(nvl: *const ffi::nvlist_t, key: &CStr) -> Result<String> {
 }
 
 #[allow(dead_code)]
-fn nvlist_get_uint64(nvl: *const ffi::nvlist_t, key: &CStr) -> Result<u64> {
+fn nvlist_get_uint64(lz: &Libzfs, nvl: *const ffi::nvlist_t, key: &CStr) -> Result<u64> {
     let mut out: u64 = 0;
     // SAFETY: nvl + key are valid; out is a writable stack slot.
-    let rc = unsafe { ffi::nvlist_lookup_uint64(nvl, key.as_ptr(), &mut out) };
+    let rc = unsafe { (lz.nvlist_lookup_uint64)(nvl, key.as_ptr(), &mut out) };
     if rc != 0 {
         return Err(anyhow!(
             "nvlist_lookup_uint64({}) failed: rc={rc}",
@@ -580,10 +591,14 @@ fn nvlist_get_uint64(nvl: *const ffi::nvlist_t, key: &CStr) -> Result<u64> {
     Ok(out)
 }
 
-fn nvlist_get_nvlist(nvl: *mut ffi::nvlist_t, key: &CStr) -> Result<*mut ffi::nvlist_t> {
+fn nvlist_get_nvlist(
+    lz: &Libzfs,
+    nvl: *mut ffi::nvlist_t,
+    key: &CStr,
+) -> Result<*mut ffi::nvlist_t> {
     let mut out: *mut ffi::nvlist_t = ptr::null_mut();
     // SAFETY: nvl + key are valid; out is a writable stack slot.
-    let rc = unsafe { ffi::nvlist_lookup_nvlist(nvl, key.as_ptr(), &mut out) };
+    let rc = unsafe { (lz.nvlist_lookup_nvlist)(nvl, key.as_ptr(), &mut out) };
     if rc != 0 || out.is_null() {
         return Err(anyhow!(
             "nvlist_lookup_nvlist({}) failed: rc={rc}",
@@ -594,6 +609,7 @@ fn nvlist_get_nvlist(nvl: *mut ffi::nvlist_t, key: &CStr) -> Result<*mut ffi::nv
 }
 
 fn nvlist_get_nvlist_array(
+    lz: &Libzfs,
     nvl: *mut ffi::nvlist_t,
     key: &CStr,
 ) -> Result<(*mut *mut ffi::nvlist_t, usize)> {
@@ -601,7 +617,7 @@ fn nvlist_get_nvlist_array(
     let mut nelem: c_uint = 0;
     // SAFETY: nvl + key are valid; out-slots are writable.
     let rc = unsafe {
-        ffi::nvlist_lookup_nvlist_array(nvl, key.as_ptr(), &mut out_ptr, &mut nelem)
+        (lz.nvlist_lookup_nvlist_array)(nvl, key.as_ptr(), &mut out_ptr, &mut nelem)
     };
     if rc != 0 || out_ptr.is_null() {
         return Err(anyhow!(
@@ -675,16 +691,7 @@ mod tests {
     /// Live libzfs integration test. Runs automatically on FreeBSD builds
     /// (where the bsd-1 CI host has libzfs in base + at least one imported
     /// test pool set up by `scripts/setup-bsd-ci.sh`). On Linux this test
-    /// is cfg-gated out so dev hosts without loaded ZFS skip it silently —
-    /// Linux CI containers don't have the kernel module either.
-    ///
-    /// Asserts:
-    /// - `LibzfsPoolsSource::new()` succeeds.
-    /// - `refresh()` returns Ok.
-    /// - At least one pool is reported.
-    /// - The first pool has a non-empty name.
-    /// - The first pool's root vdev has at least one child vdev (so we
-    ///   know the recursive walker ran for real, not just the root row).
+    /// is cfg-gated out so dev hosts without loaded ZFS skip it silently.
     #[cfg(target_os = "freebsd")]
     #[test]
     fn libzfs_freebsd_integration() {

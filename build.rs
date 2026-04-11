@@ -1,33 +1,36 @@
-// Emit the libzfs link flag on every target that has libzfs.
+// Build-time linker configuration.
 //
-// zftop v0.2c onward requires libzfs at link time and runtime. On Linux the
-// distro package providing libzfs.so is typically `libzfs2linux` or
-// `zfsutils-linux` (Debian/Ubuntu) or `zfs-utils` (Arch); the dev package
-// supplying the headers used at build time is `libzfs-dev` (Debian/Ubuntu).
-// On FreeBSD 14+, libzfs is in base at `/lib/libzfs.so.4` and no install
-// is required.
+// zftop v0.2c+ loads libzfs and libnvpair at runtime via `dlopen` (see
+// `src/pools/ffi.rs::Libzfs::load`) rather than binding them at link time.
+// That means the output binary has NO libzfs / libnvpair entry in its
+// `DT_NEEDED` list — the same binary works across every OpenZFS soname
+// from 0.7 through 2.3+. No apt-get install libzfs-dev required in CI.
 //
-// We unconditionally emit the link flag for Linux and FreeBSD targets. Any
-// other target (macOS, Windows, etc.) is unsupported — main.rs already
-// errors out of `build_sources` on unknown OSes, and the link flag omission
-// here keeps the build graph honest about that.
+// The only thing build.rs has to do is ensure the dynamic loader API
+// (`dlopen` / `dlsym` / `dlclose` / `dlerror`) resolves at link time:
+// - glibc 2.34+ (Debian 12, Ubuntu 24.04, Arch current): dlopen lives in
+//   `libc.so.6` and `-ldl` is a no-op stub. Either way works.
+// - glibc 2.31 (Debian 11, Ubuntu 20.04): dlopen is in `libdl.so.2`;
+//   `-ldl` is required.
+// - FreeBSD 14+: dlopen is in the base libc; `-ldl` is unnecessary but
+//   a no-op link flag is harmless.
+//
+// Emitting `cargo:rustc-link-lib=dl` covers both cases.
 
 fn main() {
     let target_os = std::env::var("CARGO_CFG_TARGET_OS").unwrap_or_default();
     match target_os.as_str() {
-        "linux" | "freebsd" => {
-            // libzfs for zpool_* symbols, libnvpair for nvlist_lookup_*.
-            // On Linux these are separate .so files (libzfs2linux +
-            // libnvpair3linux on Debian, zfs-utils provides both on Arch);
-            // on FreeBSD base, libnvpair is inside libzfs.a but the .so
-            // split mirrors Linux. Emitting both links is correct on both
-            // targets — a stray -lnvpair is a no-op if already pulled in.
-            println!("cargo:rustc-link-lib=zfs");
-            println!("cargo:rustc-link-lib=nvpair");
+        "linux" => {
+            // Needed for dlopen on glibc < 2.34. No-op on newer glibc.
+            println!("cargo:rustc-link-lib=dl");
+        }
+        "freebsd" => {
+            // dlopen is in base libc; no extra flag needed. Emitting a
+            // cargo directive here purely for symmetry with the Linux arm.
         }
         _ => {
             // Non-supported target — main.rs's `build_sources` cfg-gated
-            // fallback errors out at runtime. No link flag needed.
+            // fallback errors out at runtime.
         }
     }
     println!("cargo:rerun-if-changed=build.rs");
