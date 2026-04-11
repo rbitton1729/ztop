@@ -12,9 +12,20 @@ variables:
 cache:
   key: ${CI_COMMIT_REF_SLUG}-${CI_JOB_NAME}
   paths:
+    # Only content-addressed caches. .cargo/registry and .cargo/git are
+    # keyed off Cargo.lock hashes internally so they survive source-tree
+    # changes. target/ is NOT safe to cache across different source trees:
+    # cargo's .fingerprint metadata references file paths and compile
+    # inputs that go stale the moment the module layout changes. A stale
+    # target/ restored onto a fresh checkout causes the classic
+    # "can't find crate for ratatui" failure (pipeline 285 on main after
+    # the v0.2c merge) because rustc's crate resolver can't match the
+    # cached rlibs against the current source tree's dep graph.
+    #
+    # Rebuilding target/ from scratch costs ~1 min per job, which is
+    # cheap compared to debugging cache corruption on every merge.
     - .cargo/registry
     - .cargo/git
-    - target/
 
 test:
   stage: test
