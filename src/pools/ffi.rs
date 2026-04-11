@@ -145,9 +145,21 @@ pub const VDEV_TYPE_REPLACING: &str = "replacing";
 // The `scan_stats` nvlist key returns a `uint64_array`. Each index maps to
 // a field of `struct pool_scan_stat` in sys/fs/zfs.h. The 0..=8 indices are
 // the "stored on disk" prefix and have been stable since OpenZFS 0.7.
-// Newer versions append runtime-only fields after index 8 — we don't read
-// those, and we check `nelem >= 9` before indexing to guard against an
-// older libzfs returning a shorter array.
+// Indices 9..=14 are the runtime-only "pass" fields that OpenZFS 0.8
+// (2019) added when it introduced sequential scrub — `pss_issued` at
+// index 14 is what `zpool status` actually divides by `pss_to_examine`
+// to compute the displayed "% done" number. Reading `pss_examined` for
+// progress instead (as we did in v0.2) is wrong for all modern pools
+// because the metadata walk finishes in seconds while `pss_issued`
+// climbs over the real duration of the scrub.
+//
+// We support two array lengths:
+// - `PSS_MIN_LEN = 9`: legacy pre-0.8 layout (no sequential scrub). Fall
+//   back to `pss_examined / pss_to_examine`, which was accurate for that
+//   era because every byte was scanned in one pass.
+// - `PSS_MIN_LEN_WITH_ISSUED = 15`: OpenZFS 0.8+ layout with pass fields.
+//   Use `pss_issued / (pss_to_examine - pss_skipped)` to match zpool
+//   status byte-for-byte.
 // ---------------------------------------------------------------------------
 
 pub const PSS_IDX_FUNC: usize = 0;
@@ -156,12 +168,22 @@ pub const PSS_IDX_START_TIME: usize = 2;
 pub const PSS_IDX_END_TIME: usize = 3;
 pub const PSS_IDX_TO_EXAMINE: usize = 4;
 pub const PSS_IDX_EXAMINED: usize = 5;
-#[allow(dead_code)]
 pub const PSS_IDX_SKIPPED: usize = 6;
 #[allow(dead_code)]
 pub const PSS_IDX_PROCESSED: usize = 7;
 pub const PSS_IDX_ERRORS: usize = 8;
 pub const PSS_MIN_LEN: usize = 9; // Check `nelem >= PSS_MIN_LEN` before indexing.
+
+// Runtime-only "pass" fields (OpenZFS 0.8+). See long comment above.
+#[allow(dead_code)]
+pub const PSS_IDX_PASS_EXAM: usize = 9;
+pub const PSS_IDX_PASS_START: usize = 10;
+#[allow(dead_code)]
+pub const PSS_IDX_PASS_SCRUB_PAUSE: usize = 11;
+pub const PSS_IDX_PASS_SCRUB_SPENT_PAUSED: usize = 12;
+pub const PSS_IDX_PASS_ISSUED: usize = 13;
+pub const PSS_IDX_ISSUED: usize = 14;
+pub const PSS_MIN_LEN_WITH_ISSUED: usize = 15;
 
 // ---------------------------------------------------------------------------
 // vdev_stat_t uint64_array indices

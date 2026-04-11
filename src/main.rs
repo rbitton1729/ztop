@@ -46,6 +46,15 @@ fn main() -> Result<()> {
     io::stdout().execute(EnterAlternateScreen)?;
     let backend = CrosstermBackend::new(io::stdout());
     let mut terminal = Terminal::new(backend)?;
+    // Explicitly clear after entering the alternate screen. Most local
+    // xterms wipe the buffer as part of the altscreen switch, but mosh
+    // (which replays a predicted screen client-side) and `screen` with
+    // `altscreen off` in .screenrc leave the pre-launch text visible
+    // until ratatui paints over it — so blank rows (between panels,
+    // under the pools list, etc.) show ghost characters from whatever
+    // was on the terminal before `zftop` started. A single full-buffer
+    // clear removes the ghosts before the first frame renders.
+    terminal.clear()?;
 
     let result = run(&mut terminal, &mut app, interval);
 

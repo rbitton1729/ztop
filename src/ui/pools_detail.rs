@@ -118,9 +118,7 @@ fn format_scrub_header(scrub: &ScrubState) -> String {
             let verb = if *is_resilver { "Resilver" } else { "Scrub" };
             let mut s = format!("{verb}: {progress_pct}% complete");
             if let Some(eta) = eta_seconds {
-                let hours = eta / 3600;
-                let minutes = (eta % 3600) / 60;
-                s.push_str(&format!(", ETA {hours:02}:{minutes:02}"));
+                s.push_str(&format!(", ETA {}", format_eta(*eta)));
             }
             if let Some(bps) = speed_bytes_per_sec {
                 s.push_str(&format!(", {}/s", format_bytes(*bps)));
@@ -134,6 +132,34 @@ fn format_scrub_header(scrub: &ScrubState) -> String {
             let rel = format_relative_time(*completed_at);
             format!("Last scrub: {rel}, {errors_repaired} errors repaired")
         }
+    }
+}
+
+/// Human-friendly ETA renderer. Uses explicit unit labels (`s`, `m`, `h`,
+/// `d`) instead of colon-separated digits so the user can never confuse
+/// `HH:MM` with `MM:SS`. Always shows at least one non-zero unit when
+/// `secs > 0`, so a sub-minute ETA surfaces as e.g. `45s` instead of
+/// collapsing to `00:00`.
+///
+/// - `0..60`         → `"Ns"`              (e.g., `"45s"`)
+/// - `60..3600`      → `"MmSSs"`           (e.g., `"2m33s"`)
+/// - `3600..86400`   → `"HhMMm"`           (e.g., `"1h23m"`)
+/// - `86400..`       → `"Dd HHh"`          (e.g., `"2d 5h"`)
+fn format_eta(secs: u64) -> String {
+    if secs < 60 {
+        format!("{secs}s")
+    } else if secs < 3600 {
+        let m = secs / 60;
+        let s = secs % 60;
+        format!("{m}m{s:02}s")
+    } else if secs < 86_400 {
+        let h = secs / 3600;
+        let m = (secs % 3600) / 60;
+        format!("{h}h{m:02}m")
+    } else {
+        let d = secs / 86_400;
+        let h = (secs % 86_400) / 3600;
+        format!("{d}d {h}h")
     }
 }
 
@@ -306,6 +332,7 @@ fn draw_centered(frame: &mut Frame, area: Rect, text: &str, style: Style) {
 
 #[cfg(test)]
 mod tests {
+    use super::format_eta;
     use crate::app::{App, PoolsView, Tab};
     use crate::arcstats;
     use crate::meminfo::{self, MemSource};
@@ -476,6 +503,55 @@ mod tests {
             out.contains("Scrub: 42% complete"),
             "missing scrub progress header: {out:?}"
         );
+        // scrubbing_pool fixture sets eta_seconds = 1800 (30 min). With
+        // the old `HH:MM` formatter this rendered as "00:30" — ambiguous
+        // with MM:SS. New formatter: "30m00s". Assert on the explicit
+        // unit label so we can't silently regress back.
+        assert!(
+            out.contains("ETA 30m00s"),
+            "expected ETA formatted as '30m00s', got: {out:?}"
+        );
+    }
+
+    /// Regression: the old ETA formatter used `"{hours:02}:{minutes:02}"`,
+    /// which for any ETA under one minute collapsed to `"00:00"` —
+    /// indistinguishable from "done", and for sub-hour ETAs (e.g. `"00:02"`)
+    /// was easily misread as MM:SS on the user's screen. The new formatter
+    /// is unambiguous: `Ns` / `MmSSs` / `HhMMm` / `Dd HHh`.
+    #[test]
+    fn format_eta_shows_seconds_for_sub_minute_times() {
+        // The load-bearing case: do NOT collapse to "00:00".
+        assert_eq!(format_eta(0), "0s");
+        assert_eq!(format_eta(1), "1s");
+        assert_eq!(format_eta(45), "45s");
+        assert_eq!(format_eta(59), "59s");
+    }
+
+    #[test]
+    fn format_eta_uses_minute_second_below_an_hour() {
+        // 60s rolls over cleanly to the m/s format.
+        assert_eq!(format_eta(60), "1m00s");
+        // The user's real rpool case — 153s — was what made me notice
+        // the ambiguous format. Must render as "2m33s", not "00:02".
+        assert_eq!(format_eta(153), "2m33s");
+        assert_eq!(format_eta(1800), "30m00s");
+        assert_eq!(format_eta(3599), "59m59s");
+    }
+
+    #[test]
+    fn format_eta_uses_hour_minute_above_an_hour() {
+        assert_eq!(format_eta(3600), "1h00m");
+        assert_eq!(format_eta(3720), "1h02m");
+        // A long-running scrub on a big pool.
+        assert_eq!(format_eta(5 * 3600 + 30 * 60), "5h30m");
+        assert_eq!(format_eta(86_399), "23h59m");
+    }
+
+    #[test]
+    fn format_eta_uses_day_hour_for_multi_day_jobs() {
+        assert_eq!(format_eta(86_400), "1d 0h");
+        // Resilver on a ~100TB array: ballpark 2-3 days.
+        assert_eq!(format_eta(2 * 86_400 + 5 * 3600), "2d 5h");
     }
 
     #[test]

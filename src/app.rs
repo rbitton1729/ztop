@@ -193,7 +193,27 @@ impl App {
             .position(|t| *t == self.current_tab)
             .unwrap_or(0) as i32;
         let next_idx = ((current_idx + delta) % len + len) % len;
-        self.current_tab = all[next_idx as usize];
+        self.switch_tab(all[next_idx as usize]);
+    }
+
+    /// Switch to a different top-level tab. Leaving the Pools tab while
+    /// drilled into a specific pool collapses the drilldown back to the
+    /// list view (keeping the selection on the same pool), so returning
+    /// to Pools later lands on the list — not on a stale detail view. A
+    /// no-op switch (e.g. pressing `2` while already on Pools) preserves
+    /// whatever sub-view the user is currently in.
+    fn switch_tab(&mut self, target: Tab) {
+        if target == self.current_tab {
+            return;
+        }
+        if self.current_tab == Tab::Pools {
+            if let PoolsView::Detail { pool_index } = self.pools_view {
+                self.pools_view = PoolsView::List {
+                    selected: pool_index,
+                };
+            }
+        }
+        self.current_tab = target;
     }
 
     pub fn refresh(&mut self) -> Result<()> {
@@ -244,15 +264,15 @@ impl App {
                 return;
             }
             KeyCode::Char('1') => {
-                self.current_tab = Tab::Overview;
+                self.switch_tab(Tab::Overview);
                 return;
             }
             KeyCode::Char('2') => {
-                self.current_tab = Tab::Pools;
+                self.switch_tab(Tab::Pools);
                 return;
             }
             KeyCode::Char('3') => {
-                self.current_tab = Tab::Arc;
+                self.switch_tab(Tab::Arc);
                 return;
             }
             KeyCode::Tab => {
@@ -850,6 +870,115 @@ mod tests {
         app.current_tab = Tab::Pools;
         app.on_key(key(KeyCode::Enter));
         assert!(matches!(app.pools_view, PoolsView::List { .. }));
+    }
+
+    /// Leaving the Pools tab while drilled into a specific pool must
+    /// collapse the drilldown so that returning to Pools lands on the
+    /// list. The selection stays on the pool the user was inspecting.
+    /// Exercises every tab-change key: 1, 3, Tab, BackTab.
+    #[test]
+    fn leaving_pools_while_in_detail_collapses_to_list_via_overview_key() {
+        let mut app = app_with_pools(vec![
+            test_pool("a", PoolHealth::Online, 100, 50),
+            test_pool("b", PoolHealth::Online, 100, 50),
+            test_pool("c", PoolHealth::Online, 100, 50),
+        ]);
+        app.current_tab = Tab::Pools;
+        app.pools_view = PoolsView::Detail { pool_index: 2 };
+        app.on_key(key(KeyCode::Char('1')));
+        assert_eq!(app.current_tab, Tab::Overview);
+        assert_eq!(
+            app.pools_view,
+            PoolsView::List { selected: 2 },
+            "leaving Pools via '1' should have collapsed Detail to List"
+        );
+    }
+
+    #[test]
+    fn leaving_pools_while_in_detail_collapses_to_list_via_arc_key() {
+        let mut app = app_with_pools(vec![
+            test_pool("a", PoolHealth::Online, 100, 50),
+            test_pool("b", PoolHealth::Online, 100, 50),
+        ]);
+        app.current_tab = Tab::Pools;
+        app.pools_view = PoolsView::Detail { pool_index: 1 };
+        app.on_key(key(KeyCode::Char('3')));
+        assert_eq!(app.current_tab, Tab::Arc);
+        assert_eq!(app.pools_view, PoolsView::List { selected: 1 });
+    }
+
+    #[test]
+    fn leaving_pools_while_in_detail_collapses_to_list_via_tab_key() {
+        let mut app = app_with_pools(vec![
+            test_pool("a", PoolHealth::Online, 100, 50),
+            test_pool("b", PoolHealth::Online, 100, 50),
+        ]);
+        app.current_tab = Tab::Pools;
+        app.pools_view = PoolsView::Detail { pool_index: 0 };
+        app.on_key(key(KeyCode::Tab));
+        // Pools → ARC (next in Tab::ALL order).
+        assert_eq!(app.current_tab, Tab::Arc);
+        assert_eq!(app.pools_view, PoolsView::List { selected: 0 });
+    }
+
+    #[test]
+    fn leaving_pools_while_in_detail_collapses_to_list_via_backtab_key() {
+        let mut app = app_with_pools(vec![
+            test_pool("a", PoolHealth::Online, 100, 50),
+            test_pool("b", PoolHealth::Online, 100, 50),
+        ]);
+        app.current_tab = Tab::Pools;
+        app.pools_view = PoolsView::Detail { pool_index: 1 };
+        app.on_key(key(KeyCode::BackTab));
+        // Pools ← Overview (previous in Tab::ALL order).
+        assert_eq!(app.current_tab, Tab::Overview);
+        assert_eq!(app.pools_view, PoolsView::List { selected: 1 });
+    }
+
+    /// Pressing `2` while already on the Pools tab must NOT collapse an
+    /// in-progress drilldown — that's a no-op switch. Only switching
+    /// *away* and back should reset the sub-view.
+    #[test]
+    fn pressing_pools_key_while_already_on_pools_preserves_detail() {
+        let mut app = app_with_pools(vec![
+            test_pool("a", PoolHealth::Online, 100, 50),
+            test_pool("b", PoolHealth::Online, 100, 50),
+        ]);
+        app.current_tab = Tab::Pools;
+        app.pools_view = PoolsView::Detail { pool_index: 1 };
+        app.on_key(key(KeyCode::Char('2')));
+        assert_eq!(app.current_tab, Tab::Pools);
+        assert_eq!(
+            app.pools_view,
+            PoolsView::Detail { pool_index: 1 },
+            "no-op tab switch should not disturb the sub-view"
+        );
+    }
+
+    /// End-to-end round trip: drill in, tab out, tab back → list view.
+    #[test]
+    fn pools_detail_round_trip_ends_on_list() {
+        let mut app = app_with_pools(vec![
+            test_pool("a", PoolHealth::Online, 100, 50),
+            test_pool("b", PoolHealth::Online, 100, 50),
+            test_pool("c", PoolHealth::Online, 100, 50),
+        ]);
+        app.current_tab = Tab::Pools;
+        app.pools_view = PoolsView::List { selected: 2 };
+        // Drill in
+        app.on_key(key(KeyCode::Enter));
+        assert_eq!(app.pools_view, PoolsView::Detail { pool_index: 2 });
+        // Tab out to Overview
+        app.on_key(key(KeyCode::Char('1')));
+        assert_eq!(app.current_tab, Tab::Overview);
+        // Return to Pools
+        app.on_key(key(KeyCode::Char('2')));
+        assert_eq!(app.current_tab, Tab::Pools);
+        assert_eq!(
+            app.pools_view,
+            PoolsView::List { selected: 2 },
+            "returning to Pools after a drill-in + tab-out should land on the list"
+        );
     }
 
     #[test]

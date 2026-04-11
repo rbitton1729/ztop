@@ -116,7 +116,12 @@ fn draw_pools_section(frame: &mut Frame, area: Rect, app: &App) {
     let widths = [
         Constraint::Length(16),
         Constraint::Length(10),
-        Constraint::Length(24),
+        // Capacity cell formats as `"{used}/{total} ({pct}%)"`. `format_bytes`
+        // tops out at 10-char strings (`"1023.0 TiB"`), so the worst-case
+        // contents are `"1023.0 TiB/1023.0 TiB (100%)"` — exactly 28 chars.
+        // Anything narrower silently truncates the closing `)` (and, for
+        // TiB-scale pools, the percent as well).
+        Constraint::Length(28),
         Constraint::Min(8),
     ];
 
@@ -312,6 +317,68 @@ mod tests {
         assert!(
             out.contains("no pools imported"),
             "missing no-pools notice: {out}"
+        );
+    }
+
+    /// Regression: the CAPACITY column used to be `Constraint::Length(24)`,
+    /// which truncated `"476.8 MiB/953.7 MiB (50%)"` (25 chars) to
+    /// `"476.8 MiB/953.7 MiB (50%"` — the closing paren disappeared into
+    /// thin air, leaving unbalanced parentheses on the overview tab. Any
+    /// pool larger than a few MB would hit this, so the bug was basically
+    /// always visible on real hosts. Widening the column fixes it.
+    #[test]
+    fn overview_capacity_cell_has_matching_parens() {
+        // 500M / 1G → "(50%)". Two-digit percent so the 25-char worst case
+        // for GiB-ish sizes is exercised.
+        let pools = vec![
+            test_pool("tank", PoolHealth::Online, 1_000_000_000, 500_000_000),
+        ];
+        let app = app_for_overview(
+            pools.clone(),
+            Some(Box::new(FakePoolsSource::new(pools))),
+            None,
+        );
+        let out = render_overview(&app);
+
+        // Open paren and close paren must both be present in the same line.
+        let pool_line = out
+            .lines()
+            .find(|l| l.contains("tank"))
+            .expect("missing tank row in overview");
+        assert!(
+            pool_line.contains("(50%)"),
+            "expected full `(50%)` in capacity cell, got line: {pool_line:?}"
+        );
+    }
+
+    /// Pathological edge case: a very large (TiB-scale) pool at 100% full
+    /// produces the longest possible capacity string: `format_bytes` tops
+    /// out at 10-char strings like `"1023.0 TiB"`, giving
+    /// `"1023.0 TiB/1023.0 TiB (100%)"` = 28 chars. The CAPACITY column
+    /// must accommodate that without dropping either paren or the `%`.
+    /// Using 1023 TiB (just below the PiB boundary) to force the 10-char
+    /// TiB variant — 1 TiB alone would only produce `"1.0 TiB"` (7 chars).
+    #[test]
+    fn overview_capacity_cell_survives_tib_pool_at_100pct() {
+        const TIB: u64 = 1024u64.pow(4);
+        let bytes = 1023 * TIB; // produces "1023.0 TiB" via format_bytes
+        let pools = vec![
+            test_pool("bigpool", PoolHealth::Online, bytes, bytes),
+        ];
+        let app = app_for_overview(
+            pools.clone(),
+            Some(Box::new(FakePoolsSource::new(pools))),
+            None,
+        );
+        let out = render_overview(&app);
+
+        let pool_line = out
+            .lines()
+            .find(|l| l.contains("bigpool"))
+            .expect("missing bigpool row");
+        assert!(
+            pool_line.contains("(100%)"),
+            "expected full `(100%)` for a fully-allocated TiB pool, got line: {pool_line:?}"
         );
     }
 

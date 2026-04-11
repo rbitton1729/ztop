@@ -455,9 +455,9 @@ fn read_vdev_stats_raw(lz: &Libzfs, nvl: *mut ffi::nvlist_t) -> Option<Vec<u64>>
     Some(slice.to_vec())
 }
 
-/// Read `scan_stats` uint64 array from a vdev nvlist. Decodes into a
-/// `ScrubState`. Returns `ScrubState::Never` when the key is missing or
-/// the array is shorter than we expect.
+/// Read `scan_stats` uint64 array from a vdev nvlist and decode into a
+/// `ScrubState`. Thin FFI wrapper — the actual math lives in
+/// [`decode_scan_state`] so it can be unit-tested without libzfs.
 fn read_scan_state(lz: &Libzfs, nvl: *mut ffi::nvlist_t) -> ScrubState {
     let mut out_ptr: *mut u64 = ptr::null_mut();
     let mut nelem: c_uint = 0;
@@ -470,12 +470,47 @@ fn read_scan_state(lz: &Libzfs, nvl: *mut ffi::nvlist_t) -> ScrubState {
             &mut nelem,
         )
     };
-    if rc != 0 || out_ptr.is_null() || (nelem as usize) < ffi::PSS_MIN_LEN {
+    if rc != 0 || out_ptr.is_null() {
         return ScrubState::Never;
     }
     // SAFETY: nelem is the element count libzfs wrote; backing memory is
-    // owned by the parent nvlist.
+    // owned by the parent nvlist and only borrowed for this call.
     let stats = unsafe { std::slice::from_raw_parts(out_ptr, nelem as usize) };
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    decode_scan_state(stats, now)
+}
+
+/// Decode a `pool_scan_stat_t` u64 array into a `ScrubState`. Pure,
+/// deterministic function — all libzfs I/O happens in the caller. `now_secs`
+/// is the current UNIX time, passed in so tests can drive the speed/ETA
+/// calculations with a known clock.
+///
+/// Matches the math in OpenZFS `cmd/zpool/zpool_main.c` — specifically
+/// `print_scan_scrub_resilver_status` — so our "% complete" and "X.X B/s"
+/// numbers line up with what `zpool status` prints for the same pool.
+///
+/// On OpenZFS 0.8+ (array length >= [`ffi::PSS_MIN_LEN_WITH_ISSUED`]) we
+/// use the sequential-scrub-aware formula:
+///
+/// ```text
+/// progress_pct     = pss_issued / (pss_to_examine - pss_skipped)
+/// rate             = pss_pass_issued / pass_elapsed
+/// eta_seconds      = (total_i - pss_issued) / rate
+/// pass_elapsed     = now - pss_pass_start - pss_pass_scrub_spent_paused
+/// ```
+///
+/// On pre-0.8 (length 9..15) we fall back to the legacy
+/// `pss_examined / pss_to_examine` math, which was correct back when the
+/// scanner read every byte in a single pass. In practice the fallback is
+/// only reached on extremely old systems — every libzfs soname in our
+/// dlopen list (`libzfs.so.2` onward) ships with sequential scrub.
+fn decode_scan_state(stats: &[u64], now_secs: u64) -> ScrubState {
+    if stats.len() < ffi::PSS_MIN_LEN {
+        return ScrubState::Never;
+    }
     let func = stats[ffi::PSS_IDX_FUNC];
     let state = stats[ffi::PSS_IDX_STATE];
 
@@ -484,40 +519,70 @@ fn read_scan_state(lz: &Libzfs, nvl: *mut ffi::nvlist_t) -> ScrubState {
         ffi::DSS_SCANNING => {
             let to_examine = stats[ffi::PSS_IDX_TO_EXAMINE];
             let examined = stats[ffi::PSS_IDX_EXAMINED];
-            let progress_pct = if to_examine == 0 {
+            let has_issued = stats.len() >= ffi::PSS_MIN_LEN_WITH_ISSUED;
+
+            // Progress numerator/denominator: modern (issued vs. total_i)
+            // if the pass fields are present, otherwise legacy (examined
+            // vs. to_examine).
+            let (numerator, denominator) = if has_issued {
+                let issued = stats[ffi::PSS_IDX_ISSUED];
+                let skipped = stats[ffi::PSS_IDX_SKIPPED];
+                let total_i = to_examine.saturating_sub(skipped);
+                (issued, total_i)
+            } else {
+                (examined, to_examine)
+            };
+            let progress_pct = if denominator == 0 {
                 0
             } else {
-                ((examined * 100) / to_examine).min(100) as u8
+                ((numerator.saturating_mul(100)) / denominator).min(100) as u8
             };
-            let start_time = stats[ffi::PSS_IDX_START_TIME];
-            let speed = if start_time > 0 {
-                let now = SystemTime::now()
-                    .duration_since(UNIX_EPOCH)
-                    .map(|d| d.as_secs())
-                    .unwrap_or(0);
-                let elapsed = now.saturating_sub(start_time);
-                if elapsed > 0 {
+
+            // Speed/ETA: same modern/legacy split. The modern path mirrors
+            // zpool_main.c's `pass_elapsed = MAX(1, now - pass_start -
+            // pass_scrub_spent_paused)`.
+            let (speed_bytes_per_sec, eta_seconds) = if has_issued {
+                let issued = stats[ffi::PSS_IDX_ISSUED];
+                let skipped = stats[ffi::PSS_IDX_SKIPPED];
+                let pass_start = stats[ffi::PSS_IDX_PASS_START];
+                let pass_paused = stats[ffi::PSS_IDX_PASS_SCRUB_SPENT_PAUSED];
+                let pass_issued = stats[ffi::PSS_IDX_PASS_ISSUED];
+                let total_i = to_examine.saturating_sub(skipped);
+
+                let pass_elapsed = now_secs
+                    .saturating_sub(pass_start)
+                    .saturating_sub(pass_paused)
+                    .max(1);
+                let rate = pass_issued / pass_elapsed;
+                let speed = if rate > 0 { Some(rate) } else { None };
+                let eta = if rate > 0 && total_i > issued {
+                    Some((total_i - issued) / rate)
+                } else {
+                    None
+                };
+                (speed, eta)
+            } else {
+                let start_time = stats[ffi::PSS_IDX_START_TIME];
+                let elapsed = now_secs.saturating_sub(start_time);
+                let speed = if elapsed > 0 && examined > 0 {
                     Some(examined / elapsed)
                 } else {
                     None
-                }
-            } else {
-                None
+                };
+                let eta = speed.and_then(|rate| {
+                    if rate > 0 && to_examine > examined {
+                        Some((to_examine - examined) / rate)
+                    } else {
+                        None
+                    }
+                });
+                (speed, eta)
             };
-            let eta = if examined > 0 && to_examine > examined {
-                let speed_val = speed.unwrap_or(0);
-                if speed_val > 0 {
-                    Some((to_examine - examined) / speed_val)
-                } else {
-                    None
-                }
-            } else {
-                None
-            };
+
             ScrubState::InProgress {
                 progress_pct,
-                eta_seconds: eta,
-                speed_bytes_per_sec: speed,
+                eta_seconds,
+                speed_bytes_per_sec,
                 is_resilver: func == ffi::POOL_SCAN_RESILVER,
             }
         }
@@ -631,6 +696,266 @@ fn nvlist_get_nvlist_array(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ---- decode_scan_state --------------------------------------------------
+    //
+    // Pure-function tests for the scan-stats decoder. Hand-build a
+    // pool_scan_stat_t u64 array of the right length, pass it through with a
+    // synthetic "now" clock, and assert on the resulting `ScrubState`. No
+    // libzfs involvement, no `#[ignore]`.
+
+    const GIB: u64 = 1 << 30;
+
+    /// Build a 15-element (OpenZFS 0.8+) scan_stats array with the fields
+    /// we set by name; unset indices stay zero. Keeps the tests below from
+    /// drowning in `stats[N] = ...` noise.
+    fn build_modern_scan_stats(
+        func: u64,
+        state: u64,
+        start_time: u64,
+        to_examine: u64,
+        examined: u64,
+        skipped: u64,
+        pass_start: u64,
+        pass_paused: u64,
+        pass_issued: u64,
+        issued: u64,
+    ) -> Vec<u64> {
+        let mut stats = vec![0u64; ffi::PSS_MIN_LEN_WITH_ISSUED];
+        stats[ffi::PSS_IDX_FUNC] = func;
+        stats[ffi::PSS_IDX_STATE] = state;
+        stats[ffi::PSS_IDX_START_TIME] = start_time;
+        stats[ffi::PSS_IDX_TO_EXAMINE] = to_examine;
+        stats[ffi::PSS_IDX_EXAMINED] = examined;
+        stats[ffi::PSS_IDX_SKIPPED] = skipped;
+        stats[ffi::PSS_IDX_PASS_START] = pass_start;
+        stats[ffi::PSS_IDX_PASS_SCRUB_SPENT_PAUSED] = pass_paused;
+        stats[ffi::PSS_IDX_PASS_ISSUED] = pass_issued;
+        stats[ffi::PSS_IDX_ISSUED] = issued;
+        stats
+    }
+
+    /// Regression test for the exact user-reported bug: zpool status said
+    /// "15.39% done" but the zftop pools tab showed "scrub 100%". The cause
+    /// was decoding `pss_examined / pss_to_examine` instead of the
+    /// sequential-scrub-aware `pss_issued / (pss_to_examine - pss_skipped)`.
+    ///
+    /// Numbers mirror the real rpool snapshot the user pasted:
+    ///   228G / 227G scanned, 34.9G / 227G issued at 1.25G/s, 15.39% done
+    #[test]
+    fn decode_scan_state_matches_zpool_status_after_metadata_walk() {
+        // 228 GiB examined vs. 227 GiB to_examine — the buggy calc pins at 100%.
+        // 34.9 GiB issued / 227 GiB denominator = 15.37% (rounds to "15").
+        // Pass elapsed ~28s so pass_issued / elapsed ≈ 1.25 GiB/s.
+        let scan_start = 1_000_000;
+        let pass_issued_bytes = 34_900_000_000; // 34.9 GB in bytes
+        let issued_bytes = 34_900_000_000;
+        let to_examine = 227 * GIB;
+        let examined = 228 * GIB;
+
+        let stats = build_modern_scan_stats(
+            ffi::POOL_SCAN_SCRUB,
+            ffi::DSS_SCANNING,
+            scan_start,
+            to_examine,
+            examined,
+            0, // skipped
+            scan_start,
+            0, // pass_paused
+            pass_issued_bytes,
+            issued_bytes,
+        );
+        let now = scan_start + 28;
+
+        match decode_scan_state(&stats, now) {
+            ScrubState::InProgress {
+                progress_pct,
+                eta_seconds,
+                speed_bytes_per_sec,
+                is_resilver,
+            } => {
+                assert!(!is_resilver);
+                // 34.9e9 / (227 * 2^30) = 0.1433... ≈ 14% (int truncation
+                // from integer math, matches what zpool shows modulo
+                // rounding). The important thing is that it's nowhere
+                // near 100%.
+                assert!(
+                    (13..=16).contains(&progress_pct),
+                    "expected ~15% progress, got {progress_pct}% \
+                     — did we regress back to examined/to_examine?"
+                );
+
+                // ~1.25 GiB/s. The pass_issued is in decimal bytes but
+                // the GIB constant is binary, so the printed number in
+                // the UI is ≈ 1.16 GiB/s. Allow a generous window —
+                // anything within an order of magnitude of 1 GiB/s
+                // proves we're using pass_issued/pass_elapsed.
+                let rate = speed_bytes_per_sec.expect("speed should be Some");
+                assert!(
+                    rate > 500 * (1 << 20) && rate < 3 * GIB,
+                    "expected ~1 GiB/s, got {rate} B/s"
+                );
+
+                // ETA should be roughly (227 - 34.9) GB / 1.25 GB/s ≈ 150s.
+                let eta = eta_seconds.expect("eta should be Some");
+                assert!(
+                    (60..=600).contains(&eta),
+                    "expected eta roughly 2-10 min, got {eta}s"
+                );
+            }
+            other => panic!("expected InProgress, got {other:?}"),
+        }
+    }
+
+    /// When `pss_pass_issued == 0` (e.g. the first second of a scrub while
+    /// the metadata walk is still building the issue queue), the rate is 0
+    /// and we should report `speed = None` / `eta = None` rather than
+    /// divide-by-zero. Progress should be 0, matching zpool status's
+    /// "0.00% done".
+    #[test]
+    fn decode_scan_state_just_started_scrub_with_no_issued_yet() {
+        let start = 2_000_000;
+        let stats = build_modern_scan_stats(
+            ffi::POOL_SCAN_SCRUB,
+            ffi::DSS_SCANNING,
+            start,
+            500 * GIB, // to_examine
+            1 * GIB,   // examined — metadata walk just starting
+            0,
+            start,
+            0,
+            0, // pass_issued = 0: no I/O yet
+            0, // issued = 0
+        );
+
+        match decode_scan_state(&stats, start + 2) {
+            ScrubState::InProgress {
+                progress_pct,
+                eta_seconds,
+                speed_bytes_per_sec,
+                ..
+            } => {
+                assert_eq!(progress_pct, 0);
+                assert!(speed_bytes_per_sec.is_none());
+                assert!(eta_seconds.is_none());
+            }
+            other => panic!("expected InProgress, got {other:?}"),
+        }
+    }
+
+    /// Resilver on a modern pool — same math as scrub, but
+    /// `is_resilver` should flip to `true` so the UI picks the right label.
+    #[test]
+    fn decode_scan_state_modern_resilver_sets_flag() {
+        let start = 3_000_000;
+        let stats = build_modern_scan_stats(
+            ffi::POOL_SCAN_RESILVER,
+            ffi::DSS_SCANNING,
+            start,
+            100 * GIB,
+            100 * GIB, // metadata walk complete
+            0,
+            start,
+            0,
+            25 * GIB, // pass_issued: 25 GiB in 25s → ~1 GiB/s
+            25 * GIB,
+        );
+        match decode_scan_state(&stats, start + 25) {
+            ScrubState::InProgress {
+                progress_pct,
+                is_resilver,
+                ..
+            } => {
+                assert!(is_resilver);
+                // 25 / 100 = 25%
+                assert_eq!(progress_pct, 25);
+            }
+            other => panic!("expected InProgress, got {other:?}"),
+        }
+    }
+
+    /// Legacy scan_stats array (pre-0.8, only the 9 on-disk fields). We
+    /// have no `pss_issued` to read, so fall back to `examined/to_examine`
+    /// and to the `elapsed = now - start_time` speed formula. This path is
+    /// essentially dead on any currently-supported OpenZFS but we still
+    /// want it to produce sane numbers rather than panic.
+    #[test]
+    fn decode_scan_state_legacy_array_uses_examined_fallback() {
+        let start = 4_000_000;
+        let mut stats = vec![0u64; ffi::PSS_MIN_LEN]; // only 9 elements
+        stats[ffi::PSS_IDX_FUNC] = ffi::POOL_SCAN_SCRUB;
+        stats[ffi::PSS_IDX_STATE] = ffi::DSS_SCANNING;
+        stats[ffi::PSS_IDX_START_TIME] = start;
+        stats[ffi::PSS_IDX_TO_EXAMINE] = 100 * GIB;
+        stats[ffi::PSS_IDX_EXAMINED] = 50 * GIB; // halfway done under old semantics
+
+        match decode_scan_state(&stats, start + 50) {
+            ScrubState::InProgress {
+                progress_pct,
+                speed_bytes_per_sec,
+                ..
+            } => {
+                assert_eq!(progress_pct, 50);
+                // 50 GiB / 50s = 1 GiB/s
+                let rate = speed_bytes_per_sec.expect("legacy path should compute speed");
+                assert!(rate > 0);
+            }
+            other => panic!("expected InProgress, got {other:?}"),
+        }
+    }
+
+    /// Finished scrub decodes into `ScrubState::Finished` with the errors
+    /// count and completion time from the array.
+    #[test]
+    fn decode_scan_state_finished_carries_errors_and_end_time() {
+        let mut stats = vec![0u64; ffi::PSS_MIN_LEN];
+        stats[ffi::PSS_IDX_FUNC] = ffi::POOL_SCAN_SCRUB;
+        stats[ffi::PSS_IDX_STATE] = ffi::DSS_FINISHED;
+        stats[ffi::PSS_IDX_END_TIME] = 1_700_000_000;
+        stats[ffi::PSS_IDX_ERRORS] = 7;
+
+        match decode_scan_state(&stats, 1_700_500_000) {
+            ScrubState::Finished {
+                errors_repaired,
+                completed_at,
+            } => {
+                assert_eq!(errors_repaired, 7);
+                let secs = completed_at
+                    .duration_since(UNIX_EPOCH)
+                    .unwrap()
+                    .as_secs();
+                assert_eq!(secs, 1_700_000_000);
+            }
+            other => panic!("expected Finished, got {other:?}"),
+        }
+    }
+
+    /// `DSS_NONE` (never scrubbed) and a too-short array both decode to
+    /// `ScrubState::Never`.
+    #[test]
+    fn decode_scan_state_never_and_empty() {
+        let mut stats = vec![0u64; ffi::PSS_MIN_LEN];
+        stats[ffi::PSS_IDX_STATE] = ffi::DSS_NONE;
+        assert!(matches!(decode_scan_state(&stats, 0), ScrubState::Never));
+
+        // Array shorter than PSS_MIN_LEN -> Never (defensive guard).
+        let too_short = vec![0u64; 3];
+        assert!(matches!(
+            decode_scan_state(&too_short, 0),
+            ScrubState::Never
+        ));
+    }
+
+    /// Canceled scrub maps to `ScrubState::Error`.
+    #[test]
+    fn decode_scan_state_canceled_maps_to_error() {
+        let mut stats = vec![0u64; ffi::PSS_MIN_LEN];
+        stats[ffi::PSS_IDX_FUNC] = ffi::POOL_SCAN_SCRUB;
+        stats[ffi::PSS_IDX_STATE] = ffi::DSS_CANCELED;
+        assert!(matches!(decode_scan_state(&stats, 0), ScrubState::Error));
+    }
+
+    // ---- live libzfs smoke tests --------------------------------------------
 
     /// Smoke test — only meaningful on a host with libzfs + /dev/zfs
     /// (kernel module loaded, `/dev/zfs` accessible). Marked `#[ignore]`
