@@ -61,9 +61,17 @@ build:aarch64:
   before_script:
     # `rust:1-bullseye` is a Debian 11 image with the host (amd64) Rust
     # toolchain pre-installed but no cross toolchain and no aarch64 std.
-    # Pull both from apt + rustup.
+    # We need three things:
+    #   - gcc-aarch64-linux-gnu       — the cross compiler/linker driver and
+    #                                   aarch64-linux-gnu-strip used below.
+    #   - libc6-dev-arm64-cross       — aarch64 glibc startup objects
+    #                                   (Scrt1.o, crti.o, crtn.o) and headers.
+    #                                   Without these, ld fails with
+    #                                   "cannot find Scrt1.o" — the cross gcc
+    #                                   package alone does NOT pull them in.
+    #   - rustup target add aarch64…  — the aarch64 Rust std library.
     - apt-get update
-    - apt-get install -y --no-install-recommends gcc-aarch64-linux-gnu
+    - apt-get install -y --no-install-recommends gcc-aarch64-linux-gnu libc6-dev-arm64-cross
     - rustup target add ${TARGET}
   script:
     - |
