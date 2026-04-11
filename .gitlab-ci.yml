@@ -10,7 +10,15 @@ variables:
   PACKAGE_URL: "${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/packages/generic/zftop"
 
 cache:
-  key: ${CI_COMMIT_REF_SLUG}-${CI_JOB_NAME}
+  # The `v2-` prefix intentionally invalidates every pre-existing cache on
+  # the runners. The old caches were written back when `target/` was in
+  # `paths:` below, and GitLab extracts the full stored archive on restore
+  # regardless of the current `paths:` list — so dropping target/ from the
+  # paths alone is not enough to stop stale rlibs from flooding the
+  # checkout. Bumping the key prefix forces a fresh cache entry with no
+  # prior target/ inside. Bump again (v3, v4, ...) if a future change
+  # makes old caches toxic.
+  key: v2-${CI_COMMIT_REF_SLUG}-${CI_JOB_NAME}
   paths:
     # Only content-addressed caches. .cargo/registry and .cargo/git are
     # keyed off Cargo.lock hashes internally so they survive source-tree
