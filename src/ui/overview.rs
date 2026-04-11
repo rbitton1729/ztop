@@ -3,8 +3,8 @@
 //!
 //! Layout:
 //!
-//!     ┌─ System RAM ─────────────────────┐  height 5
-//!     │  ... bar + sidecars ...          │
+//!     ┌─ System RAM ─────────────────────┐  height 3
+//!     │  ... bar + bottom-title numbers  │
 //!     └──────────────────────────────────┘
 //!     ┌─ ARC ────────────────────────────┐  height 4
 //!     │  ... gauge + 1-line summary ...  │
@@ -26,7 +26,7 @@ use crate::pools::ScrubState;
 
 pub(super) fn draw(frame: &mut Frame, area: Rect, app: &App) {
     let [ram_area, arc_area, pools_area] = Layout::vertical([
-        Constraint::Length(5),
+        Constraint::Length(3),
         Constraint::Length(4),
         Constraint::Min(4),
     ])

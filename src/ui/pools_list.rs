@@ -140,7 +140,17 @@ fn build_row(p: &PoolInfo, is_selected: bool, wide: bool) -> Row<'static> {
     };
 
     if is_selected {
-        row.style(Style::default().add_modifier(Modifier::REVERSED))
+        // Dark-gray background + bold instead of `Modifier::REVERSED`.
+        // REVERSED flips fg and bg on every glyph, which mangles the
+        // capacity minibar's █/░ shading into something unreadable.
+        // An explicit bg lets cells with their own fg style (the HEALTH
+        // column) keep their health color, and plain-fg cells (the
+        // capacity minibar) render normally on the grey bg.
+        row.style(
+            Style::default()
+                .bg(Color::DarkGray)
+                .add_modifier(Modifier::BOLD),
+        )
     } else {
         row
     }
