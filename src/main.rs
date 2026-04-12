@@ -158,6 +158,7 @@ fn print_help() {
     println!("    -n, --interval <ms>     Polling interval in milliseconds [default: 1000]");
     println!("        --source <path>     Path to arcstats file [Linux only; default: /proc/spl/kstat/zfs/arcstats]");
     println!("        --meminfo <path>    Path to meminfo file [Linux only; default: /proc/meminfo]");
+    println!("    -U, --upgrade           Print the command to upgrade to the latest release");
     println!("    -h, --help              Print this help message");
     println!("    -V, --version           Print version");
     println!();
@@ -192,6 +193,21 @@ fn parse_args() -> (PathBuf, Option<PathBuf>, Duration) {
             }
             "-V" | "--version" => {
                 println!("zftop {}", env!("CARGO_PKG_VERSION"));
+                std::process::exit(0);
+            }
+            "-U" | "--upgrade" => {
+                let url = "https://git.skylantix.com/rbitton/zftop/-/raw/main/install.sh";
+                println!("To upgrade zftop, run:");
+                println!();
+                println!("  curl -fsSL {url} | sh");
+                println!();
+                println!("To pass options, download the script first:");
+                println!();
+                println!("  curl -fsSL {url} -o install.sh");
+                println!("  less install.sh                        # inspect before running");
+                println!("  sh install.sh --version 0.3.0          # pin a specific release");
+                println!("  sh install.sh --dir ~/.local/bin       # custom install directory");
+                println!("  sh install.sh --force                  # skip the ZFS-not-detected prompt");
                 std::process::exit(0);
             }
             "--source" => {
