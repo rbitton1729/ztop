@@ -13,10 +13,11 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::Result;
+use crossterm::cursor::MoveTo;
 use crossterm::event::{self, Event, KeyCode, KeyModifiers};
-use crossterm::terminal::{self, EnterAlternateScreen, LeaveAlternateScreen};
+use crossterm::terminal;
 use crossterm::ExecutableCommand;
-use ratatui::backend::CrosstermBackend;
+use ratatui::backend::{Backend, CrosstermBackend};
 use ratatui::Terminal;
 
 use app::App;
@@ -45,22 +46,16 @@ fn main() -> Result<()> {
         Err(e) => return Err(e.context(format!("failed to read {}", source.display()))),
     };
 
-    // Set up terminal
-    enter_tui()?;
+    // Set up terminal. We deliberately stay on the main screen (no
+    // alternate-screen buffer) so the last rendered frame remains in
+    // scrollback after `zftop` exits, the same way `top -n1` or `less`
+    // leave their output visible.
+    terminal::enable_raw_mode()?;
     let backend = CrosstermBackend::new(io::stdout());
     let mut terminal = Terminal::new(backend)?;
-    // Explicitly clear after entering the alternate screen. Most local
-    // xterms wipe the buffer as part of the altscreen switch, but mosh
-    // (which replays a predicted screen client-side) and `screen` with
-    // `altscreen off` in .screenrc leave the pre-launch text visible
-    // until ratatui paints over it — so blank rows (between panels,
-    // under the pools list, etc.) show ghost characters from whatever
-    // was on the terminal before `zftop` started. A single full-buffer
-    // clear removes the ghosts before the first frame renders.
-    terminal.clear()?;
 
-    // On Unix, catch SIGTSTP so we can cleanly leave the alt-screen before
-    // the process is stopped. The terminal driver is in raw mode (ISIG off),
+    // On Unix, catch SIGTSTP so we can cleanly leave raw mode before the
+    // process is stopped. The terminal driver is in raw mode (ISIG off),
     // so Ctrl+Z from the keyboard arrives as a key event rather than a
     // signal — we also handle that path in `run`.
     #[cfg(unix)]
@@ -75,39 +70,27 @@ fn main() -> Result<()> {
     #[cfg(not(unix))]
     let result = run(&mut terminal, &mut app, interval);
 
-    // Restore terminal no matter what. Do NOT clear the screen here — we want
-    // the last rendered frame to remain visible in the user's scrollback after
-    // we leave the alternate screen. A plain newline drops the shell prompt
-    // onto a fresh line below whatever was on the normal screen before zftop
-    // started.
+    // Restore the terminal. Since we never left the main screen, the last
+    // frame is already on screen — we just need to drop out of raw mode
+    // and park the cursor below the drawn content so the shell prompt
+    // starts on a fresh line.
     terminal::disable_raw_mode()?;
-    io::stdout().execute(LeaveAlternateScreen)?;
+    let size = terminal.backend().size().unwrap_or_default();
+    io::stdout().execute(MoveTo(0, size.height.saturating_sub(1)))?;
     println!();
 
     result
 }
 
-fn enter_tui() -> Result<()> {
-    terminal::enable_raw_mode()?;
-    io::stdout().execute(EnterAlternateScreen)?;
-    Ok(())
-}
-
-fn leave_tui() -> Result<()> {
-    terminal::disable_raw_mode()?;
-    io::stdout().execute(LeaveAlternateScreen)?;
-    Ok(())
-}
-
-/// Suspend the process like a normal job-control stop: leave the alt-screen
-/// and raw mode so the user gets their shell back, then raise SIGSTOP (which
-/// cannot be caught). When the shell resumes us with `fg` (SIGCONT), we
-/// re-enter the alt-screen and force a full redraw.
+/// Suspend the process like a normal job-control stop: leave raw mode so
+/// the user gets their shell back, then raise SIGSTOP (which cannot be
+/// caught). When the shell resumes us with `fg` (SIGCONT), we re-enable
+/// raw mode and force a full redraw so the frame repaints from scratch.
 #[cfg(unix)]
 fn suspend_process(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> Result<()> {
-    leave_tui()?;
+    terminal::disable_raw_mode()?;
     signal_hook::low_level::raise(signal_hook::consts::SIGSTOP)?;
-    enter_tui()?;
+    terminal::enable_raw_mode()?;
     terminal.clear()?;
     Ok(())
 }
