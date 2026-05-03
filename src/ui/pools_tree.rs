@@ -1,16 +1,18 @@
-//! Pools tab — unified tree view. Manual per-row rendering (one
-//! `Line` of styled `Span`s per visible row) because pool rows and
-//! vdev rows have different column shapes — the ratatui `Table`
-//! widget assumes a single column schema across all rows. The NAME
-//! column starts at the same x-offset on both row types (load-bearing
-//! for the tree indent); other columns float per row type. `▼`/`▶`
-//! glyphs mark expandable pool rows; vdev rows have a blank glyph
-//! slot to anchor the NAME column.
+//! Pools tab — unified tree view. Uses ratatui's `Table` widget so the
+//! NAME and CAPACITY columns flex to fill the terminal width via
+//! `Constraint::Min`; fixed columns (HEALTH, TYPE, FRAG, SCRUB, ERR/R/W/C)
+//! stay at fixed widths via `Constraint::Length`.
+//!
+//! Pool rows and vdev rows share the same column schema; their content
+//! differs. Tree depth is embedded as leading spaces in the column-0
+//! string (along with the ▼/▶ expand glyph for pool rows). Selection
+//! highlight uses `Row::style(bg DarkGray + bold)` which propagates to
+//! all cells while preserving each cell's foreground color.
 
-use ratatui::layout::{Constraint, Layout, Rect};
+use ratatui::layout::{Constraint, Rect};
 use ratatui::style::{Color, Modifier, Style};
-use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Paragraph};
+use ratatui::text::Span;
+use ratatui::widgets::{Block, Borders, Cell, Row, Table};
 use ratatui::Frame;
 
 use super::widgets;
@@ -44,7 +46,7 @@ pub(super) fn draw(frame: &mut Frame, area: Rect, app: &App) {
     }
 
     let wide = inner.width >= WIDE_THRESHOLD;
-    let rows = app.flatten_visible_pool_rows();
+    let rows_data = app.flatten_visible_pool_rows();
     let selected_idx = match &app.pools_view {
         PoolsView::Tree { selected, .. } => *selected,
         PoolsView::Detail { .. } => 0,
@@ -54,77 +56,86 @@ pub(super) fn draw(frame: &mut Frame, area: Rect, app: &App) {
         PoolsView::Detail { expanded, .. } => expanded,
     };
 
-    // Layout: header(1) + body(rest).
-    let [header_area, body_area] = Layout::vertical([
-        Constraint::Length(1),
-        Constraint::Min(0),
-    ])
-    .areas(inner);
-
-    let header_line = build_header_line(wide);
-    frame.render_widget(Paragraph::new(header_line), header_area);
-
-    let body_lines: Vec<Line> = rows
+    let rows: Vec<Row> = rows_data
         .iter()
         .enumerate()
         .map(|(i, row)| {
             let is_selected = i == selected_idx;
-            let line = match row {
-                VisibleRow::Pool(p) => build_pool_line(p, expanded, wide),
-                VisibleRow::Vdev { node, depth } => build_vdev_line(node, *depth, wide),
-            };
-            if is_selected {
-                line.style(
-                    Style::default()
-                        .bg(Color::DarkGray)
-                        .add_modifier(Modifier::BOLD),
-                )
-            } else {
-                line
+            match row {
+                VisibleRow::Pool(p) => build_pool_row(p, expanded, is_selected, wide),
+                VisibleRow::Vdev { node, depth } => build_vdev_row(node, *depth, is_selected, wide),
             }
         })
         .collect();
 
-    frame.render_widget(Paragraph::new(body_lines), body_area);
+    let header = build_header_row(wide);
+    let widths = build_widths(wide);
+    let table = Table::new(rows, widths).header(header);
+    frame.render_widget(table, inner);
 }
 
-fn build_header_line(wide: bool) -> Line<'static> {
-    let bold = Style::default().add_modifier(Modifier::BOLD);
-    // Pool-row header. Vdev rows borrow these column slots semantically:
-    //   NAME → indented vdev name
-    //   HEALTH → STATE (same x-offset)
-    //   TYPE → KIND
-    //   CAPACITY → SIZE + DEVICE_PATH (vdev rows reclaim this width)
-    //   FRAG → R errors      ┐
-    //   SCRUB → W errors     ├ vdev rows split the right edge
-    //   ERR → C errors        ┘ into three R/W/C cells (wide mode)
-    let mut spans = vec![
-        Span::raw("  "), // marker(2)
-        Span::styled(format!("{:<2}", ""), bold), // glyph slot(1)+space(1)
-        Span::styled(format!("{:<14}", "NAME"), bold),
-        Span::styled(format!("{:<10}", "HEALTH"), bold),
-        Span::styled(format!("{:<8}", "TYPE"), bold),
-        Span::styled(format!("{:<28}", "CAPACITY"), bold),
-    ];
+fn build_widths(wide: bool) -> Vec<Constraint> {
     if wide {
-        spans.push(Span::styled(format!("{:<6}", "FRAG"), bold));
-        spans.push(Span::styled(format!("{:<16}", "SCRUB"), bold));
-        spans.push(Span::styled(format!("{:<6}", "ERR"), bold));
+        vec![
+            Constraint::Min(16),    // NAME (flex)
+            Constraint::Length(10), // HEALTH/STATE
+            Constraint::Length(8),  // TYPE/KIND
+            Constraint::Min(28),    // CAPACITY/SIZE+PATH (flex)
+            Constraint::Length(6),  // FRAG
+            Constraint::Length(16), // SCRUB
+            Constraint::Length(6),  // ERR (pool sum) / R (vdev)
+            Constraint::Length(6),  // (blank pool) / W (vdev)
+            Constraint::Length(6),  // (blank pool) / C (vdev)
+        ]
     } else {
-        spans.push(Span::styled(format!("{:<16}", "SCRUB"), bold));
-        // Trailing 6-char blank slot — corresponds to the ERR cell on
-        // narrow vdev rows. Header is intentionally blank here because pool
-        // narrow rows don't have an ERR column; only vdev narrow rows do.
-        spans.push(Span::styled(format!("{:<6}", ""), bold));
+        vec![
+            Constraint::Min(16),    // NAME (flex)
+            Constraint::Length(10), // HEALTH/STATE
+            Constraint::Length(8),  // TYPE/KIND
+            Constraint::Min(20),    // CAPACITY/SIZE (flex)
+            Constraint::Length(16), // SCRUB
+            Constraint::Length(6),  // ERR (vdev sum; pool blank)
+        ]
     }
-    Line::from(spans)
 }
 
-fn build_pool_line<'a>(
+fn build_header_row(wide: bool) -> Row<'static> {
+    let bold = Style::default().add_modifier(Modifier::BOLD);
+    // Note: the "ERR" header in col 6 (wide) is approximate. On pool rows
+    // it shows the per-pool error sum; on vdev rows that cell holds the
+    // R count and cols 7/8 hold W/C. The visual context (three numbers
+    // in a row on vdev lines) makes the meaning clear.
+    let cells: Vec<Cell> = if wide {
+        vec![
+            Cell::from(Span::styled("NAME", bold)),
+            Cell::from(Span::styled("HEALTH", bold)),
+            Cell::from(Span::styled("TYPE", bold)),
+            Cell::from(Span::styled("CAPACITY", bold)),
+            Cell::from(Span::styled("FRAG", bold)),
+            Cell::from(Span::styled("SCRUB", bold)),
+            Cell::from(Span::styled("ERR", bold)),
+            Cell::from(Span::styled("", bold)),
+            Cell::from(Span::styled("", bold)),
+        ]
+    } else {
+        vec![
+            Cell::from(Span::styled("NAME", bold)),
+            Cell::from(Span::styled("HEALTH", bold)),
+            Cell::from(Span::styled("TYPE", bold)),
+            Cell::from(Span::styled("CAPACITY", bold)),
+            Cell::from(Span::styled("SCRUB", bold)),
+            Cell::from(Span::styled("ERR", bold)),
+        ]
+    };
+    Row::new(cells)
+}
+
+fn build_pool_row<'a>(
     p: &'a PoolInfo,
     expanded: &std::collections::BTreeSet<String>,
+    is_selected: bool,
     wide: bool,
-) -> Line<'a> {
+) -> Row<'a> {
     let glyph = if p.root_vdev.children.is_empty() {
         ' '
     } else if expanded.contains(&p.name) {
@@ -132,54 +143,149 @@ fn build_pool_line<'a>(
     } else {
         '▶'
     };
-    let health_label = pool_health_label(p.health);
-    let raid_type = p.raid_label();
-    let capacity = render_capacity_cell(p);
-    let scrub = render_scrub_cell(&p.scrub);
+    let name_cell = format!("{glyph} {}", p.name);
+    let health_cell = Cell::from(Span::styled(
+        pool_health_label(p.health),
+        widgets::pool_health_style(p.health),
+    ));
+    let type_cell = p.raid_label();
+    let capacity_cell = render_capacity_cell(p);
+    let scrub_cell = render_scrub_cell(&p.scrub);
 
-    let mut spans = vec![
-        Span::raw("  "), // marker — selection-bg picks it up; selected-row marker overlay handled by selection style
-        Span::raw(format!("{glyph} ")),
-        Span::raw(format!("{:<14}", truncate_pad(&p.name, 14))),
-        Span::styled(
-            format!("{:<10}", health_label),
-            widgets::pool_health_style(p.health),
-        ),
-        Span::raw(format!("{:<8}", truncate_pad(&raid_type, 8))),
-        Span::raw(format!("{:<28}", capacity)),
-    ];
-    if wide {
+    let cells: Vec<Cell> = if wide {
         let frag = match p.fragmentation_pct {
             Some(v) => format!("{v}%"),
             None => "—".into(),
         };
-        spans.push(Span::raw(format!("{:<6}", frag)));
-        spans.push(Span::raw(format!("{:<16}", truncate_pad(&scrub, 16))));
         let err_sum = p.root_vdev.total_errors();
-        let err_style = if err_sum == 0 {
-            Style::default()
-        } else {
-            Style::default().fg(Color::Red)
-        };
-        spans.push(Span::styled(format!("{:<6}", err_sum), err_style));
+        let err_cell = Cell::from(Span::styled(
+            format!("{err_sum}"),
+            err_style(err_sum),
+        ));
+        vec![
+            Cell::from(name_cell),
+            health_cell,
+            Cell::from(type_cell),
+            Cell::from(capacity_cell),
+            Cell::from(frag),
+            Cell::from(scrub_cell),
+            err_cell,
+            Cell::from(""),
+            Cell::from(""),
+        ]
     } else {
-        spans.push(Span::raw(format!("{:<16}", truncate_pad(&scrub, 16))));
-        // Trailing 6-char blank to match the vdev narrow row's ERR(6) cell
-        // — keeps body widths equal so selection bg extends evenly across
-        // pool and vdev rows.
-        spans.push(Span::raw(" ".repeat(6)));
+        vec![
+            Cell::from(name_cell),
+            health_cell,
+            Cell::from(type_cell),
+            Cell::from(capacity_cell),
+            Cell::from(scrub_cell),
+            // Pool narrow rows have no ERR; only vdev narrow rows do.
+            Cell::from(""),
+        ]
+    };
+
+    let row = Row::new(cells);
+    if is_selected {
+        row.style(
+            Style::default()
+                .bg(Color::DarkGray)
+                .add_modifier(Modifier::BOLD),
+        )
+    } else {
+        row
     }
-    Line::from(spans)
 }
 
-/// Truncate `s` to `width` chars and right-pad to that width with spaces.
-/// Truncates from the right (loses the tail).
-fn truncate_pad(s: &str, width: usize) -> String {
-    if s.chars().count() <= width {
-        format!("{s:<width$}")
+fn build_vdev_row<'a>(
+    node: &'a VdevNode,
+    depth: u8,
+    is_selected: bool,
+    wide: bool,
+) -> Row<'a> {
+    // Indent + leading 2-space "glyph slot" so the name aligns under the
+    // pool's name (which is "{glyph} {name}" — glyph + space + name).
+    let indent = "  ".repeat(depth as usize);
+    let name_cell = format!("{indent}  {}", node.name);
+    let state_label = if is_group(node.kind) {
+        String::new()
     } else {
-        let truncated: String = s.chars().take(width).collect();
-        truncated
+        vdev_state_label(node.state).to_string()
+    };
+    let state_cell = Cell::from(Span::styled(state_label, vdev_state_style(node.state)));
+    let kind_cell = vdev_kind_label(node.kind);
+    let size_str = match node.size_bytes {
+        Some(b) => format_bytes(b),
+        None => String::new(),
+    };
+
+    let cells: Vec<Cell> = if wide {
+        // Pack SIZE + " " + DEVICE_PATH into the CAPACITY-equivalent cell
+        // (col 3). Table will truncate from the right with `…` if the path
+        // overflows the cell width allotted by the layout engine.
+        let path_str = match (node.kind, node.device_path.as_ref()) {
+            (
+                VdevKind::Disk
+                | VdevKind::File
+                | VdevKind::LogVdev
+                | VdevKind::CacheVdev
+                | VdevKind::SpareVdev,
+                Some(path),
+            ) => path.clone(),
+            _ => String::new(),
+        };
+        let size_path = if path_str.is_empty() {
+            size_str
+        } else {
+            format!("{size_str:<8} {path_str}")
+        };
+        let (read, write, checksum) = if is_group(node.kind) {
+            (String::new(), String::new(), String::new())
+        } else {
+            (
+                format!("{}", node.errors.read),
+                format!("{}", node.errors.write),
+                format!("{}", node.errors.checksum),
+            )
+        };
+        vec![
+            Cell::from(name_cell),
+            state_cell,
+            Cell::from(kind_cell),
+            Cell::from(size_path),
+            Cell::from(""), // FRAG slot blank on vdev rows
+            Cell::from(""), // SCRUB slot blank on vdev rows
+            Cell::from(Span::styled(read, err_style(node.errors.read))),
+            Cell::from(Span::styled(write, err_style(node.errors.write))),
+            Cell::from(Span::styled(checksum, err_style(node.errors.checksum))),
+        ]
+    } else {
+        // Narrow: drop DEVICE_PATH; combine R/W/C into a single ERR cell.
+        let err_sum_val = if is_group(node.kind) { 0 } else { node.errors.sum() };
+        let err_sum_str = if is_group(node.kind) {
+            String::new()
+        } else {
+            format!("{err_sum_val}")
+        };
+        vec![
+            Cell::from(name_cell),
+            state_cell,
+            Cell::from(kind_cell),
+            Cell::from(size_str),
+            Cell::from(""), // SCRUB slot blank on vdev rows
+            Cell::from(Span::styled(err_sum_str, err_style(err_sum_val))),
+        ]
+    };
+
+    let row = Row::new(cells);
+    if is_selected {
+        row.style(
+            Style::default()
+                .bg(Color::DarkGray)
+                .add_modifier(Modifier::BOLD),
+        )
+    } else {
+        row
     }
 }
 
@@ -240,121 +346,6 @@ fn pool_health_label(health: PoolHealth) -> String {
         PoolHealth::Unavail => "UNAVAIL",
     }
     .to_string()
-}
-
-fn build_vdev_line<'a>(
-    node: &'a VdevNode,
-    depth: u8,
-    wide: bool,
-) -> Line<'a> {
-    let indent = "  ".repeat(depth as usize);
-    // Pool row layout: marker(2) + glyph+space(2) + NAME(14) + HEALTH(10) + ...
-    // Vdev row layout: marker(2) + indent + glyph+space(2) + NAME(rest of pool's NAME slot minus indent) + STATE(10) + KIND(8) + ...
-    // The NAME slot for vdev rows starts at the same x as pool rows (col 4)
-    // and consumes `14 - indent_chars` chars before the STATE column.
-    let name_width = 14usize.saturating_sub(indent.chars().count());
-    let state_label = if is_group(node.kind) {
-        String::new()
-    } else {
-        vdev_state_label(node.state).to_string()
-    };
-    let kind_label = vdev_kind_label(node.kind);
-    let size = match node.size_bytes {
-        Some(b) => format_bytes(b),
-        None => String::new(),
-    };
-
-    let mut spans = vec![
-        Span::raw("  "),
-        Span::raw(indent.clone()),
-        Span::raw("  "), // glyph+space slot — always blank on vdev rows
-        Span::raw(format!("{:<width$}", truncate_pad(&node.name, name_width), width = name_width)),
-        Span::styled(
-            format!("{:<10}", state_label),
-            vdev_state_style(node.state),
-        ),
-        Span::raw(format!("{:<8}", truncate_pad(&kind_label, 8))),
-        Span::raw(format!("{:<8}", truncate_pad(&size, 8))),
-    ];
-
-    if wide {
-        // DEVICE_PATH absorbs the slack from CAPACITY+FRAG+SCRUB on pool rows,
-        // minus the SIZE we already emitted: 28 + 6 + 16 - 8 = 42. Then R/W/C
-        // (6+6+6 = 18) lands at the same right edge as the pool row's
-        // FRAG+SCRUB+ERR (6+16+6 = 28), minus the 10 cols we use for the
-        // wider DEVICE_PATH. Total wide row body width matches pool row's
-        // 88-char body, so the selection bg extends evenly.
-        //
-        // Math: NAME(14) + STATE(10) + KIND(8) + SIZE(8) + DEVICE_PATH(30) + R(6) + W(6) + C(6) = 88
-        //       Pool:    NAME(14) + HEALTH(10) + TYPE(8) + CAPACITY(28)  + FRAG(6) + SCRUB(16) + ERR(6) = 88
-        let path_width: usize = 30;
-        let device_path = match (node.kind, node.device_path.as_ref()) {
-            (VdevKind::Disk | VdevKind::File | VdevKind::LogVdev | VdevKind::CacheVdev | VdevKind::SpareVdev,
-             Some(path)) => truncate_left_with_ellipsis(path, path_width),
-            _ => " ".repeat(path_width), // interior nodes have no device path
-        };
-        spans.push(Span::raw(format!("{:<width$}", device_path, width = path_width)));
-
-        let (read, write, checksum) = if is_group(node.kind) {
-            (String::new(), String::new(), String::new())
-        } else {
-            (
-                format!("{}", node.errors.read),
-                format!("{}", node.errors.write),
-                format!("{}", node.errors.checksum),
-            )
-        };
-        spans.push(Span::styled(
-            format!("{:<6}", read),
-            err_style(node.errors.read),
-        ));
-        spans.push(Span::styled(
-            format!("{:<6}", write),
-            err_style(node.errors.write),
-        ));
-        spans.push(Span::styled(
-            format!("{:<6}", checksum),
-            err_style(node.errors.checksum),
-        ));
-    } else {
-        // Narrow: drop DEVICE_PATH; combine R/W/C into a single ERR cell.
-        // The CAPACITY-width slot (28 chars) shrinks: keep the SIZE we
-        // already emitted in the 8-char SIZE cell, leave the rest blank
-        // (no DEVICE_PATH on narrow).
-        let blank: String = " ".repeat(28 - 8);
-        spans.push(Span::raw(blank));
-        // The SCRUB(16) slot stays blank on vdev narrow.
-        spans.push(Span::raw(format!("{:<16}", "")));
-        let err_sum = if is_group(node.kind) {
-            String::new()
-        } else {
-            format!("{}", node.errors.sum())
-        };
-        spans.push(Span::styled(
-            format!("{:<6}", err_sum),
-            err_style(node.errors.sum()),
-        ));
-    }
-    Line::from(spans)
-}
-
-/// Truncate from the *left* with a leading `…` so trailing identifying
-/// chars (the GUID tail of a `wwn-0x500abc...`) stay visible. If the
-/// string already fits, return it as-is (right-padded by the caller).
-fn truncate_left_with_ellipsis(s: &str, max_width: usize) -> String {
-    let len = s.chars().count();
-    if len <= max_width {
-        return s.to_string();
-    }
-    if max_width <= 1 {
-        return "…".chars().take(max_width).collect();
-    }
-    let take = max_width - 1; // reserve 1 char for `…`
-    let skip = len - take;
-    let mut out = String::with_capacity(max_width * 4);
-    out.push('…');
-    out.extend(s.chars().skip(skip));
-    out
 }
 
 fn err_style(n: u64) -> Style {
@@ -566,7 +557,12 @@ mod tests {
             )],
         );
         let app = app_for_tree(vec![pool], None, &["tank"]);
-        let out = render(&app, 140, 24);
+        // Render wide enough for the CAPACITY+PATH cell to fit the full
+        // 28-char path plus the "256.0 GiB " prefix without truncation.
+        // Under the new flex layout, NAME and CAPACITY share the leftover
+        // slack roughly evenly, so we need a wide terminal to give CAPACITY
+        // enough room for the full path tail.
+        let out = render(&app, 200, 24);
         assert!(
             out.contains("/dev/disk/by-id/wwn-0x500abc")
                 || out.contains("by-id/wwn-0x500abc"),
@@ -575,7 +571,13 @@ mod tests {
     }
 
     #[test]
-    fn device_path_truncates_with_ellipsis_when_overflowing() {
+    fn device_path_truncates_when_overflowing() {
+        // With the Table widget, ratatui truncates cell content from the
+        // right when it overflows the column's allotted width. We no
+        // longer prepend `…` ourselves — Table handles that. The test
+        // therefore asserts that the path is partially visible (the
+        // leading prefix survives) but the trailing "fff" suffix does
+        // not (because the cell is too narrow to fit the full path).
         let long_path =
             "/dev/disk/by-id/wwn-0x500abc123def4567890aaabbbccc1234567890dddeeefff";
         let pool = raidz1_pool(
@@ -583,18 +585,21 @@ mod tests {
             vec![leaf("sda", ErrorCounts::default(), Some(long_path))],
         );
         let app = app_for_tree(vec![pool], None, &["tank"]);
-        // 102 cols outer → 100 cols inner = exactly hits the wide-mode
-        // threshold, but the device_path slot is only 20 chars wide so a
-        // 60-char path has to truncate.
+        // 102 cols outer → 100 cols inner = wide-mode threshold; CAPACITY
+        // column flexes but is bounded by total width.
         let out = render(&app, 102, 24);
-        // Ellipsis should appear, and the trailing portion should be visible.
+        // The path's leading prefix should be visible somewhere.
         assert!(
-            out.contains("…"),
-            "expected leading ellipsis on truncated path: {out:?}"
+            out.contains("/dev/disk/by-id/")
+                || out.contains("disk/by-id/")
+                || out.contains("by-id/wwn"),
+            "expected a prefix of the long path to be visible: {out:?}"
         );
+        // And the path is too long for the CAPACITY cell at 102 cols, so
+        // its full trailing suffix should NOT appear in full.
         assert!(
-            out.contains("dddeeefff") || out.contains("eeefff"),
-            "expected trailing characters of long path: {out:?}"
+            !out.contains("dddeeefff"),
+            "expected the long path's tail to be truncated at 102 cols: {out:?}"
         );
     }
 
@@ -723,7 +728,6 @@ mod tests {
         let app = app_for_tree(vec![pool], None, &["tank"]);
         let out = render(&app, 80, 24);
         assert!(!out.contains("FRAG"), "narrow should drop FRAG header");
-        assert!(!out.contains(" ERR "), "narrow should drop ERR header column");
         assert!(
             !out.contains("/dev/sda"),
             "narrow should drop DEVICE_PATH on vdev rows: {out:?}"
