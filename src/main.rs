@@ -1,5 +1,6 @@
 mod app;
 mod arcstats;
+mod datasets;
 mod meminfo;
 mod pools;
 mod ui;

@@ -35,6 +35,11 @@ pub fn draw(frame: &mut Frame, app: &App) {
             PoolsView::List { .. } => pools_list::draw(frame, content_area, app),
             PoolsView::Detail { .. } => pools_detail::draw(frame, content_area, app),
         },
+        Tab::Datasets => {
+            use ratatui::widgets::{Block, Borders};
+            let block = Block::default().borders(Borders::ALL).title("Datasets");
+            frame.render_widget(block, content_area);
+        }
     }
 
     draw_footer(frame, footer_area, app);
@@ -94,7 +99,7 @@ fn draw_footer(frame: &mut Frame, area: Rect, app: &App) {
         (Tab::Pools, PoolsView::List { .. }) => Line::from(vec![
             Span::styled("q", Style::default().fg(Color::Yellow)),
             Span::raw(": quit  "),
-            Span::styled("1/2/3", Style::default().fg(Color::Yellow)),
+            Span::styled("1/2/3/4", Style::default().fg(Color::Yellow)),
             Span::raw(": tabs  "),
             Span::styled("↑↓", Style::default().fg(Color::Yellow)),
             Span::raw(": select  "),
@@ -106,7 +111,7 @@ fn draw_footer(frame: &mut Frame, area: Rect, app: &App) {
         (Tab::Pools, PoolsView::Detail { .. }) => Line::from(vec![
             Span::styled("q", Style::default().fg(Color::Yellow)),
             Span::raw(": quit  "),
-            Span::styled("1/2/3", Style::default().fg(Color::Yellow)),
+            Span::styled("1/2/3/4", Style::default().fg(Color::Yellow)),
             Span::raw(": tabs  "),
             Span::styled("esc", Style::default().fg(Color::Yellow)),
             Span::raw(": back  "),
@@ -116,7 +121,7 @@ fn draw_footer(frame: &mut Frame, area: Rect, app: &App) {
         _ => Line::from(vec![
             Span::styled("q", Style::default().fg(Color::Yellow)),
             Span::raw(": quit  "),
-            Span::styled("1/2/3", Style::default().fg(Color::Yellow)),
+            Span::styled("1/2/3/4", Style::default().fg(Color::Yellow)),
             Span::raw(": tabs  "),
             Span::styled("r", Style::default().fg(Color::Yellow)),
             Span::raw(": refresh"),
@@ -195,13 +200,14 @@ mod tests {
     }
 
     #[test]
-    fn tab_strip_shows_all_three_tab_titles() {
+    fn tab_strip_shows_all_four_tab_titles() {
         let app = app_from_fixtures_on_tab(Tab::Arc);
         let terminal = draw_and_collect(&app, 80, 24);
         let row1 = row_text(terminal.backend(), 1);
         assert!(row1.contains("Overview"), "row1 = {row1:?}");
         assert!(row1.contains("ARC"), "row1 = {row1:?}");
         assert!(row1.contains("Pools"), "row1 = {row1:?}");
+        assert!(row1.contains("Datasets"), "row1 = {row1:?}");
     }
 
     #[test]
@@ -210,7 +216,7 @@ mod tests {
         let terminal = draw_and_collect(&app, 80, 24);
         let last = row_text(terminal.backend(), 23);
         assert!(last.contains("q"));
-        assert!(last.contains("1/2/3"));
+        assert!(last.contains("1/2/3/4"));
         assert!(last.contains("r"));
         // Overview shouldn't show pool-nav keys.
         assert!(!last.contains("enter"));
@@ -223,7 +229,7 @@ mod tests {
         let terminal = draw_and_collect(&app, 80, 24);
         let last = row_text(terminal.backend(), 23);
         assert!(last.contains("q"));
-        assert!(last.contains("1/2/3"));
+        assert!(last.contains("1/2/3/4"));
         assert!(last.contains("r"));
         assert!(!last.contains("enter"));
     }

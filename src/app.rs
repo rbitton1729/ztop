@@ -8,13 +8,13 @@ use crate::arcstats::ArcStats;
 use crate::meminfo::{MemSnapshot, MemSource, RamSegment};
 use crate::pools::{PoolInfo, PoolsSource};
 
-/// Top-level navigation tab. v0.2b ships all three variants but only the ARC
-/// tab has real content; Overview and Pools render placeholders until v0.2c.
+/// Top-level navigation tab. v0.3 ships four tabs.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum Tab {
     Overview,
-    Arc,
     Pools,
+    Datasets,
+    Arc,
 }
 
 /// State of the Pools tab: either the list view with a selected row, or the
@@ -26,15 +26,17 @@ pub enum PoolsView {
 }
 
 impl Tab {
-    /// Iteration order for the tab strip and for `cycle_tab`. The order here
-    /// is the order the tabs appear left-to-right on screen and the order
-    /// `Tab` / `Shift+Tab` cycle through them.
-    pub const ALL: &'static [Tab] = &[Tab::Overview, Tab::Pools, Tab::Arc];
+    /// Iteration order for the tab strip and for `cycle_tab`. The order
+    /// here is the order the tabs appear left-to-right on screen and the
+    /// order `Tab` / `Shift+Tab` cycle through them.
+    pub const ALL: &'static [Tab] =
+        &[Tab::Overview, Tab::Pools, Tab::Datasets, Tab::Arc];
 
     pub fn title(&self) -> &'static str {
         match self {
             Tab::Overview => "Overview",
             Tab::Pools => "Pools",
+            Tab::Datasets => "Datasets",
             Tab::Arc => "ARC",
         }
     }
@@ -45,7 +47,8 @@ impl Tab {
         match self {
             Tab::Overview => '1',
             Tab::Pools => '2',
-            Tab::Arc => '3',
+            Tab::Datasets => '3',
+            Tab::Arc => '4',
         }
     }
 }
@@ -272,6 +275,10 @@ impl App {
                 return;
             }
             KeyCode::Char('3') => {
+                self.switch_tab(Tab::Datasets);
+                return;
+            }
+            KeyCode::Char('4') => {
                 self.switch_tab(Tab::Arc);
                 return;
             }
@@ -628,14 +635,15 @@ mod tests {
     }
 
     #[test]
-    fn tab_all_ordered_overview_pools_arc() {
-        assert_eq!(Tab::ALL, &[Tab::Overview, Tab::Pools, Tab::Arc]);
+    fn tab_all_ordered_overview_pools_datasets_arc() {
+        assert_eq!(Tab::ALL, &[Tab::Overview, Tab::Pools, Tab::Datasets, Tab::Arc]);
     }
 
     #[test]
     fn tab_titles_stable() {
         assert_eq!(Tab::Overview.title(), "Overview");
         assert_eq!(Tab::Pools.title(), "Pools");
+        assert_eq!(Tab::Datasets.title(), "Datasets");
         assert_eq!(Tab::Arc.title(), "ARC");
     }
 
@@ -643,7 +651,8 @@ mod tests {
     fn tab_hotkeys_match_position() {
         assert_eq!(Tab::Overview.hotkey(), '1');
         assert_eq!(Tab::Pools.hotkey(), '2');
-        assert_eq!(Tab::Arc.hotkey(), '3');
+        assert_eq!(Tab::Datasets.hotkey(), '3');
+        assert_eq!(Tab::Arc.hotkey(), '4');
     }
 
     #[test]
@@ -652,6 +661,8 @@ mod tests {
         app.current_tab = Tab::Overview;
         app.cycle_tab(1);
         assert_eq!(app.current_tab, Tab::Pools);
+        app.cycle_tab(1);
+        assert_eq!(app.current_tab, Tab::Datasets);
         app.cycle_tab(1);
         assert_eq!(app.current_tab, Tab::Arc);
         app.cycle_tab(1); // wraps
@@ -664,6 +675,8 @@ mod tests {
         app.current_tab = Tab::Overview;
         app.cycle_tab(-1); // wraps
         assert_eq!(app.current_tab, Tab::Arc);
+        app.cycle_tab(-1);
+        assert_eq!(app.current_tab, Tab::Datasets);
         app.cycle_tab(-1);
         assert_eq!(app.current_tab, Tab::Pools);
         app.cycle_tab(-1);
@@ -691,10 +704,18 @@ mod tests {
     }
 
     #[test]
-    fn hotkey_3_switches_to_arc() {
+    fn hotkey_3_switches_to_datasets() {
         let mut app = app_with(sample_stats(), None);
         app.current_tab = Tab::Overview;
         app.on_key(key(KeyCode::Char('3')));
+        assert_eq!(app.current_tab, Tab::Datasets);
+    }
+
+    #[test]
+    fn hotkey_4_switches_to_arc() {
+        let mut app = app_with(sample_stats(), None);
+        app.current_tab = Tab::Overview;
+        app.on_key(key(KeyCode::Char('4')));
         assert_eq!(app.current_tab, Tab::Arc);
     }
 
@@ -926,7 +947,7 @@ mod tests {
         ]);
         app.current_tab = Tab::Pools;
         app.pools_view = PoolsView::Detail { pool_index: 1 };
-        app.on_key(key(KeyCode::Char('3')));
+        app.on_key(key(KeyCode::Char('4')));
         assert_eq!(app.current_tab, Tab::Arc);
         assert_eq!(app.pools_view, PoolsView::List { selected: 1 });
     }
@@ -940,8 +961,8 @@ mod tests {
         app.current_tab = Tab::Pools;
         app.pools_view = PoolsView::Detail { pool_index: 0 };
         app.on_key(key(KeyCode::Tab));
-        // Pools → ARC (next in Tab::ALL order).
-        assert_eq!(app.current_tab, Tab::Arc);
+        // Pools → Datasets (next in Tab::ALL order).
+        assert_eq!(app.current_tab, Tab::Datasets);
         assert_eq!(app.pools_view, PoolsView::List { selected: 0 });
     }
 
