@@ -1,6 +1,6 @@
 //! Datasets tab — tree view. Renders the flattened visible-row list as
 //! a Table with depth-indented names and expand/collapse glyphs.
-//! Selection highlight uses bg(DarkGray)+Bold (matches pools_list.rs)
+//! Selection highlight uses bg(DarkGray)+Bold (matches pools_tree.rs)
 //! to preserve cell-specific styling on selected rows. Wide layout
 //! (≥90 cols) shows USED/REFER/AVAIL/COMPRESS; narrow drops AVAIL +
 //! COMPRESS.

@@ -15,7 +15,7 @@ mod datasets_detail;
 mod datasets_tree;
 mod overview;
 mod pools_detail;
-mod pools_list;
+mod pools_tree;
 mod widgets;
 
 pub fn draw(frame: &mut Frame, app: &App) {
@@ -34,7 +34,7 @@ pub fn draw(frame: &mut Frame, app: &App) {
         Tab::Arc => arc_view::draw(frame, content_area, app),
         Tab::Overview => overview::draw(frame, content_area, app),
         Tab::Pools => match &app.pools_view {
-            PoolsView::Tree { .. } => pools_list::draw(frame, content_area, app),
+            PoolsView::Tree { .. } => pools_tree::draw(frame, content_area, app),
             PoolsView::Detail { .. } => pools_detail::draw(frame, content_area, app),
         },
         Tab::Datasets => match &app.datasets_view {
