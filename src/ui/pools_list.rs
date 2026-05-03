@@ -2,10 +2,10 @@
 //! moving selection marker. Wide layout (≥100 cols) shows 6 columns; narrow
 //! layout drops FRAG and ERR.
 
-use ratatui::layout::{Alignment, Constraint, Rect};
+use ratatui::layout::{Constraint, Rect};
 use ratatui::style::{Color, Modifier, Style};
-use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Paragraph, Row, Table};
+use ratatui::text::Span;
+use ratatui::widgets::{Block, Borders, Row, Table};
 use ratatui::Frame;
 
 use super::widgets;
@@ -19,7 +19,7 @@ pub(super) fn draw(frame: &mut Frame, area: Rect, app: &App) {
 
     // Empty / error states.
     if let Some(err) = &app.pools_init_error {
-        draw_centered(
+        widgets::draw_centered(
             frame,
             inner,
             &format!("libzfs unavailable: {err}"),
@@ -28,7 +28,7 @@ pub(super) fn draw(frame: &mut Frame, area: Rect, app: &App) {
         return;
     }
     if app.pools_snapshot.is_empty() {
-        draw_centered(
+        widgets::draw_centered(
             frame,
             inner,
             "(no pools imported)",
@@ -224,22 +224,6 @@ fn pool_health_label(health: crate::pools::PoolHealth) -> String {
     .to_string()
 }
 
-fn draw_centered(frame: &mut Frame, area: Rect, text: &str, style: Style) {
-    if area.height == 0 || area.width == 0 {
-        return;
-    }
-    let mid_y = area.y + area.height / 2;
-    let row = Rect {
-        x: area.x,
-        y: mid_y,
-        width: area.width,
-        height: 1,
-    };
-    let p = Paragraph::new(Line::from(Span::styled(text.to_string(), style)))
-        .alignment(Alignment::Center);
-    frame.render_widget(p, row);
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -291,7 +275,8 @@ mod tests {
         let pools_source: Option<Box<dyn crate::pools::PoolsSource>> =
             Some(Box::new(FakePoolsSource::new(pools.clone())));
         let mut app =
-            App::new(arc_reader, mem, pools_source, pools_init_error).expect("fixture App::new");
+            App::new(arc_reader, mem, pools_source, pools_init_error, None, None)
+                .expect("fixture App::new");
         app.current_tab = Tab::Pools;
         app.pools_snapshot = pools;
         app

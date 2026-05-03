@@ -8,9 +8,11 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 use ratatui::Frame;
 
-use crate::app::{App, PoolsView, Tab};
+use crate::app::{App, DatasetsView, PoolsView, Tab};
 
 mod arc_view;
+mod datasets_detail;
+mod datasets_tree;
 mod overview;
 mod pools_detail;
 mod pools_list;
@@ -34,6 +36,10 @@ pub fn draw(frame: &mut Frame, app: &App) {
         Tab::Pools => match app.pools_view {
             PoolsView::List { .. } => pools_list::draw(frame, content_area, app),
             PoolsView::Detail { .. } => pools_detail::draw(frame, content_area, app),
+        },
+        Tab::Datasets => match &app.datasets_view {
+            DatasetsView::Tree { .. } => datasets_tree::draw(frame, content_area, app),
+            DatasetsView::Detail { .. } => datasets_detail::draw(frame, content_area, app),
         },
     }
 
@@ -90,11 +96,35 @@ fn draw_tab_strip(frame: &mut Frame, area: Rect, app: &App) {
 }
 
 fn draw_footer(frame: &mut Frame, area: Rect, app: &App) {
-    let hint: Line = match (app.current_tab, app.pools_view) {
-        (Tab::Pools, PoolsView::List { .. }) => Line::from(vec![
+    let hint: Line = match (app.current_tab, &app.pools_view, &app.datasets_view) {
+        (Tab::Datasets, _, DatasetsView::Tree { .. }) => Line::from(vec![
             Span::styled("q", Style::default().fg(Color::Yellow)),
             Span::raw(": quit  "),
-            Span::styled("1/2/3", Style::default().fg(Color::Yellow)),
+            Span::styled("1/2/3/4", Style::default().fg(Color::Yellow)),
+            Span::raw(": tabs  "),
+            Span::styled("↑↓", Style::default().fg(Color::Yellow)),
+            Span::raw(": select  "),
+            Span::styled("←→", Style::default().fg(Color::Yellow)),
+            Span::raw(": collapse/expand  "),
+            Span::styled("enter", Style::default().fg(Color::Yellow)),
+            Span::raw(": details  "),
+            Span::styled("r", Style::default().fg(Color::Yellow)),
+            Span::raw(": refresh"),
+        ]),
+        (Tab::Datasets, _, DatasetsView::Detail { .. }) => Line::from(vec![
+            Span::styled("q", Style::default().fg(Color::Yellow)),
+            Span::raw(": quit  "),
+            Span::styled("1/2/3/4", Style::default().fg(Color::Yellow)),
+            Span::raw(": tabs  "),
+            Span::styled("esc", Style::default().fg(Color::Yellow)),
+            Span::raw(": back  "),
+            Span::styled("r", Style::default().fg(Color::Yellow)),
+            Span::raw(": refresh"),
+        ]),
+        (Tab::Pools, PoolsView::List { .. }, _) => Line::from(vec![
+            Span::styled("q", Style::default().fg(Color::Yellow)),
+            Span::raw(": quit  "),
+            Span::styled("1/2/3/4", Style::default().fg(Color::Yellow)),
             Span::raw(": tabs  "),
             Span::styled("↑↓", Style::default().fg(Color::Yellow)),
             Span::raw(": select  "),
@@ -103,10 +133,10 @@ fn draw_footer(frame: &mut Frame, area: Rect, app: &App) {
             Span::styled("r", Style::default().fg(Color::Yellow)),
             Span::raw(": refresh"),
         ]),
-        (Tab::Pools, PoolsView::Detail { .. }) => Line::from(vec![
+        (Tab::Pools, PoolsView::Detail { .. }, _) => Line::from(vec![
             Span::styled("q", Style::default().fg(Color::Yellow)),
             Span::raw(": quit  "),
-            Span::styled("1/2/3", Style::default().fg(Color::Yellow)),
+            Span::styled("1/2/3/4", Style::default().fg(Color::Yellow)),
             Span::raw(": tabs  "),
             Span::styled("esc", Style::default().fg(Color::Yellow)),
             Span::raw(": back  "),
@@ -116,7 +146,7 @@ fn draw_footer(frame: &mut Frame, area: Rect, app: &App) {
         _ => Line::from(vec![
             Span::styled("q", Style::default().fg(Color::Yellow)),
             Span::raw(": quit  "),
-            Span::styled("1/2/3", Style::default().fg(Color::Yellow)),
+            Span::styled("1/2/3/4", Style::default().fg(Color::Yellow)),
             Span::raw(": tabs  "),
             Span::styled("r", Style::default().fg(Color::Yellow)),
             Span::raw(": refresh"),
@@ -145,7 +175,7 @@ mod tests {
         let mem: Option<Box<dyn MemSource>> = Some(Box::new(
             meminfo::linux::LinuxMemSource::new(meminfo_path),
         ));
-        let mut app = App::new(arc_reader, mem, None, None).expect("fixture App::new");
+        let mut app = App::new(arc_reader, mem, None, None, None, None).expect("fixture App::new");
         app.current_tab = tab;
         app
     }
@@ -195,13 +225,14 @@ mod tests {
     }
 
     #[test]
-    fn tab_strip_shows_all_three_tab_titles() {
+    fn tab_strip_shows_all_four_tab_titles() {
         let app = app_from_fixtures_on_tab(Tab::Arc);
         let terminal = draw_and_collect(&app, 80, 24);
         let row1 = row_text(terminal.backend(), 1);
         assert!(row1.contains("Overview"), "row1 = {row1:?}");
         assert!(row1.contains("ARC"), "row1 = {row1:?}");
         assert!(row1.contains("Pools"), "row1 = {row1:?}");
+        assert!(row1.contains("Datasets"), "row1 = {row1:?}");
     }
 
     #[test]
@@ -210,7 +241,7 @@ mod tests {
         let terminal = draw_and_collect(&app, 80, 24);
         let last = row_text(terminal.backend(), 23);
         assert!(last.contains("q"));
-        assert!(last.contains("1/2/3"));
+        assert!(last.contains("1/2/3/4"));
         assert!(last.contains("r"));
         // Overview shouldn't show pool-nav keys.
         assert!(!last.contains("enter"));
@@ -223,7 +254,7 @@ mod tests {
         let terminal = draw_and_collect(&app, 80, 24);
         let last = row_text(terminal.backend(), 23);
         assert!(last.contains("q"));
-        assert!(last.contains("1/2/3"));
+        assert!(last.contains("1/2/3/4"));
         assert!(last.contains("r"));
         assert!(!last.contains("enter"));
     }
@@ -285,5 +316,33 @@ mod tests {
             whole.contains("no pools imported"),
             "expected empty-state notice, got: {whole:?}"
         );
+    }
+
+    #[test]
+    fn footer_on_datasets_tree_shows_collapse_expand_keys() {
+        let mut app = app_from_fixtures_on_tab(Tab::Datasets);
+        // app_from_fixtures_on_tab leaves datasets_view as default Tree.
+        let _ = &app.datasets_view;
+        let terminal = draw_and_collect(&app, 80, 24);
+        let last = row_text(terminal.backend(), 23);
+        assert!(last.contains("collapse/expand"), "footer = {last:?}");
+        assert!(last.contains("enter"), "footer = {last:?}");
+        assert!(last.contains("details"), "footer = {last:?}");
+        let _ = &mut app; // suppress unused mut warning if any
+    }
+
+    #[test]
+    fn footer_on_datasets_detail_shows_esc_back() {
+        use crate::app::DatasetsView;
+        use std::collections::BTreeSet;
+        let mut app = app_from_fixtures_on_tab(Tab::Datasets);
+        app.datasets_view = DatasetsView::Detail {
+            name: "tank".into(),
+            expanded: BTreeSet::new(),
+        };
+        let terminal = draw_and_collect(&app, 80, 24);
+        let last = row_text(terminal.backend(), 23);
+        assert!(last.contains("esc"), "footer = {last:?}");
+        assert!(last.contains("back"), "footer = {last:?}");
     }
 }
